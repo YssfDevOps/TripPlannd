@@ -831,6 +831,17 @@ export const MapView = memo(function MapView({
       id="trek-map"
       center={initialView.center}
       zoom={initialView.zoom}
+      /*
+       * The map needs its own finite maxZoom. The default basemap is an
+       * OpenFreeMap vector style drawn by a maplibre-gl-leaflet GL layer, which
+       * is not a Leaflet GridLayer and so contributes no zoom bound — unlike the
+       * raster/satellite TileLayers, which each set maxZoom={19}. Without one
+       * here, map.getMaxZoom() is Infinity on the vector basemap and
+       * leaflet.markercluster throws "Map has no maxZoom specified" the moment a
+       * trip with places renders, crashing the whole planner. Pinning 19 matches
+       * what the raster and satellite layers already cap at.
+       */
+      maxZoom={19}
       zoomControl={false}
       className="w-full h-full bg-[#e5e7eb]"
     >
