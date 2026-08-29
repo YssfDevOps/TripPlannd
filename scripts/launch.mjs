@@ -60,7 +60,16 @@ console.log(`[TREK] Starting TREK on ${url} ...`);
 const child = spawn('node', ['--require', 'tsconfig-paths/register', 'dist/index.js'], {
   cwd: serverDir,
   stdio: 'inherit',
-  env: { ...process.env, NODE_ENV: 'production', PORT: port },
+  env: {
+    ...process.env,
+    NODE_ENV: 'production',
+    PORT: port,
+    // Served over plain http://localhost, so the session cookie must NOT be
+    // marked Secure or the browser drops it and login fails with "Access token
+    // required". This is the documented home-lab setting. Respect an explicit
+    // override (e.g. if the user puts TREK behind HTTPS themselves).
+    COOKIE_SECURE: process.env.COOKIE_SECURE ?? 'false',
+  },
 });
 child.on('exit', (code) => process.exit(code ?? 0));
 const stop = () => {
