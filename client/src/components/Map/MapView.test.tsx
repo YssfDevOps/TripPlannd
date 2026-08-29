@@ -48,9 +48,11 @@ vi.mock('../../hooks/useGeolocation', () => ({
 const thumbCallbacks = vi.hoisted(() => new Map<string, (thumb: string) => void>())
 
 vi.mock('react-leaflet', () => ({
-  // center/zoom are surfaced so tests can assert the camera the map is built with.
-  MapContainer: ({ children, center, zoom }: any) => (
-    <div data-testid="map-container" data-center={JSON.stringify(center)} data-zoom={zoom}>{children}</div>
+  // center/zoom/maxZoom are surfaced so tests can assert the camera the map is
+  // built with. maxZoom must be finite or leaflet.markercluster throws on the
+  // default (vector) basemap — see FE-COMP-MAPVIEW-010b.
+  MapContainer: ({ children, center, zoom, maxZoom }: any) => (
+    <div data-testid="map-container" data-center={JSON.stringify(center)} data-zoom={zoom} data-maxzoom={maxZoom}>{children}</div>
   ),
   TileLayer: () => <div data-testid="tile-layer" />,
   Marker: ({ children, eventHandlers, position, icon, zIndexOffset }: any) => (
@@ -243,6 +245,17 @@ describe('MapView', () => {
     const places = [buildMapPlace({ lat: 48.8584, lng: 2.2945 })]
     render(<MapView places={places} />)
     expect(screen.getByTestId('cluster-group')).toBeTruthy()
+  })
+
+  it('FE-COMP-MAPVIEW-010b: map is built with a finite maxZoom (markercluster needs one on the vector basemap)', () => {
+    // The default basemap is an OpenFreeMap vector style, which registers no
+    // Leaflet zoom bound; without an explicit maxZoom on the map,
+    // map.getMaxZoom() is Infinity and leaflet.markercluster throws
+    // "Map has no maxZoom specified" whenever a trip with places renders.
+    render(<MapView places={[buildMapPlace({ lat: 48.8584, lng: 2.2945 })]} />)
+    const maxZoom = Number(screen.getByTestId('map-container').getAttribute('data-maxzoom'))
+    expect(Number.isFinite(maxZoom)).toBe(true)
+    expect(maxZoom).toBeGreaterThan(0)
   })
 
   it('FE-COMP-MAPVIEW-011: renders the route polyline; travel times are no longer drawn on the map', () => {
