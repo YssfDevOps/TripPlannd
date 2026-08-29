@@ -12,6 +12,7 @@ import {
   trackInsertedInDedupSet,
   type DedupSet,
 } from '../places/places.helpers';
+import { placeMatchStrategies, type PlaceMatchCandidate } from '@trek/shared';
 import type {
   Collection,
   CollectionDetailResponse,
@@ -418,26 +419,48 @@ export class CollectionsService {
   // Dedup (collection-scoped ports of placeService helpers)
   // -------------------------------------------------------------------------
 
+  /**
+   * A third hand-written copy of the place-matching order (alongside
+   * PlacesService.findDuplicatePlace and isPlaceDuplicate), and the one that had
+   * actually drifted live rather than latently: unlike findDuplicatePlace's one
+   * caller, savePlace calls this directly with no isPlaceDuplicate guard in
+   * front, so a named candidate that matched nothing by name fell through to a
+   * coordinate match unconditionally — merging the restaurant and the bar at one
+   * address. It also never read google_place_id/google_ftid/osm_id at all, even
+   * though every collection_places row stores them, so a renamed place with no
+   * matching name or coordinates could be saved again under its old id.
+   *
+   * Now walks the shared strategy list from @trek/shared, same as
+   * PlacesService.findMatchingPlaceId: provider id, then name, then coordinates
+   * and only when there is no name.
+   */
   private findDuplicateCollectionPlace(
     collectionId: number,
-    candidate: { name: string | null | undefined; lat: number | null | undefined; lng: number | null | undefined },
+    candidate: PlaceMatchCandidate,
   ): { id: number; name: string } | null {
-    const normalizedName = candidate.name?.trim().toLowerCase();
-    if (normalizedName) {
-      const dup = this.db.get<{ id: number; name: string }>(`
+    for (const strategy of placeMatchStrategies(candidate)) {
+      let hit: { id: number; name: string } | undefined;
+      if (strategy.by === 'externalId') {
+        hit = this.db.get<{ id: number; name: string }>(`
+      SELECT id, name FROM collection_places
+      WHERE collection_id = ? AND (google_place_id = ? OR google_ftid = ? OR osm_id = ?)
+      ORDER BY id ASC LIMIT 1
+    `, collectionId, strategy.id, strategy.id, strategy.id);
+      } else if (strategy.by === 'name') {
+        hit = this.db.get<{ id: number; name: string }>(`
       SELECT id, name FROM collection_places
       WHERE collection_id = ? AND lower(trim(name)) = ?
       ORDER BY id ASC LIMIT 1
-    `, collectionId, normalizedName);
-      if (dup) return dup;
-    }
-    if (candidate.lat != null && candidate.lng != null) {
-      return this.db.get<{ id: number; name: string }>(`
+    `, collectionId, strategy.name);
+      } else {
+        hit = this.db.get<{ id: number; name: string }>(`
       SELECT id, name FROM collection_places
       WHERE collection_id = ? AND lat IS NOT NULL AND lng IS NOT NULL
         AND abs(lat - ?) <= ? AND abs(lng - ?) <= ?
       ORDER BY id ASC LIMIT 1
-    `, collectionId, candidate.lat, COORD_DEDUP_TOLERANCE, candidate.lng, COORD_DEDUP_TOLERANCE) || null;
+    `, collectionId, strategy.lat, strategy.tolerance, strategy.lng, strategy.tolerance);
+      }
+      if (hit) return hit;
     }
     return null;
   }
@@ -491,7 +514,10 @@ export class CollectionsService {
     this.assertCanEdit(userId, body.collection_id);
 
     if (!body.force) {
-      const dup = this.findDuplicateCollectionPlace(body.collection_id, { name: body.name, lat: body.lat, lng: body.lng });
+      const dup = this.findDuplicateCollectionPlace(body.collection_id, {
+        name: body.name, lat: body.lat, lng: body.lng,
+        google_place_id: body.google_place_id, google_ftid: body.google_ftid, osm_id: body.osm_id,
+      });
       if (dup) return { duplicate: true, duplicateOf: dup };
     }
 
@@ -584,8 +610,10 @@ export class CollectionsService {
     const rows = this.db.all<{
       place_id: number; name: string; address: string | null; lat: number | null; lng: number | null;
       category_id: number | null; image_url: string | null; day_number: number | null; date: string | null;
+      google_place_id: string | null; google_ftid: string | null; osm_id: string | null;
     }>(`
       SELECT p.id AS place_id, p.name, p.address, p.lat, p.lng, p.category_id, p.image_url,
+             p.google_place_id, p.google_ftid, p.osm_id,
              (SELECT MIN(d.day_number) FROM day_assignments da
                 JOIN days d ON d.id = da.day_id
                WHERE da.place_id = p.id AND d.trip_id = p.trip_id) AS day_number,
@@ -601,7 +629,9 @@ export class CollectionsService {
     return {
       places: rows.map(r => ({
         ...r,
-        already_in_list: this.findDuplicateCollectionPlace(collectionId, { name: r.name, lat: r.lat, lng: r.lng }) != null,
+        // Asked with the same candidate the save will use, or the picker marks a
+        // place as new and the save then refuses it as a duplicate.
+        already_in_list: this.findDuplicateCollectionPlace(collectionId, r) != null,
         scheduled: r.day_number != null,
       })),
     };
@@ -634,7 +664,16 @@ export class CollectionsService {
         const name = p.name as string;
         const lat = (p.lat as number | null) ?? null;
         const lng = (p.lng as number | null) ?? null;
-        if (!force && this.findDuplicateCollectionPlace(collectionId, { name, lat, lng })) {
+        // The provider ids go with it: they are already carried into the insert
+        // below, so leaving them out here would recognise less than the row that
+        // gets written knows about.
+        const candidate = {
+          name, lat, lng,
+          google_place_id: (p.google_place_id as string | null) ?? null,
+          google_ftid: (p.google_ftid as string | null) ?? null,
+          osm_id: (p.osm_id as string | null) ?? null,
+        };
+        if (!force && this.findDuplicateCollectionPlace(collectionId, candidate)) {
           skipped.push({ id: placeId, name });
           continue;
         }

@@ -179,6 +179,79 @@ describe('saved places + dedup', () => {
     const col = svc.createCollection(a.id, { name: 'Locked' });
     expect(() => svc.savePlace(b.id, { collection_id: col.id, name: 'X' })).toThrow();
   });
+
+  it('COLLECTIONS-SVC-100: a NAMED candidate does not merge into a different place at the same coordinates', () => {
+    // The wrong-city hazard: findDuplicateCollectionPlace used to fall through to
+    // a coordinate match for a named candidate whose name did not match anything,
+    // which would report two distinct places at one address (the restaurant and
+    // the bar) as duplicates of each other.
+    const u = createUser(testDb).user;
+    const col = svc.createCollection(u.id, { name: 'Berlin' });
+    svc.savePlace(u.id, { collection_id: col.id, name: 'Ground Floor Diner', lat: 52.52, lng: 13.405 });
+
+    const result = svc.savePlace(u.id, { collection_id: col.id, name: 'Rooftop Bar', lat: 52.52, lng: 13.405 });
+
+    expect(result.duplicate).toBeFalsy();
+    expect(result.place).toBeDefined();
+  });
+
+  it('COLLECTIONS-SVC-101: a provider id still recognises a renamed place a name/coords search would miss', () => {
+    // google_place_id/google_ftid/osm_id are stored on every collection_places row
+    // but were never read back for dedup, so a renamed place with no matching
+    // name or coordinates could be saved again under its old provider id.
+    const u = createUser(testDb).user;
+    const col = svc.createCollection(u.id, { name: 'Renames' });
+    svc.savePlace(u.id, {
+      collection_id: col.id,
+      name: 'Original Name',
+      lat: 1,
+      lng: 1,
+      google_place_id: 'ChIJ_abc',
+    });
+
+    const result = svc.savePlace(u.id, {
+      collection_id: col.id,
+      name: 'Renamed By User',
+      lat: 2,
+      lng: 2,
+      google_place_id: 'ChIJ_abc',
+    });
+
+    expect(result.duplicate).toBe(true);
+    expect(result.duplicateOf?.name).toBe('Original Name');
+  });
+
+  it('COLLECTIONS-SVC-102: the bulk import recognises a renamed place by its provider id too', () => {
+    // savePlace was not the only caller. The bulk copy carries the provider ids
+    // into the row it writes, so asking without them would recognise less than
+    // the row it just wrote already knows.
+    const u = createUser(testDb).user;
+    const col = svc.createCollection(u.id, { name: 'Rome' });
+    const trip = createTrip(testDb, u.id);
+    const place = createPlace(testDb, trip.id, { name: 'Trattoria da Enzo' });
+    testDb.prepare('UPDATE places SET google_ftid = ? WHERE id = ?').run('0x1:0x2', place.id);
+    svc.savePlace(u.id, { collection_id: col.id, name: 'Dinner Tuesday', lat: 41.88, lng: 12.47, google_ftid: '0x1:0x2' });
+
+    const out = svc.saveFromTripPlaces(u.id, col.id, trip.id, [place.id]);
+
+    expect(out.copied).toBe(0);
+    expect(out.skipped.map(s => s.name)).toEqual(['Trattoria da Enzo']);
+  });
+
+  it('COLLECTIONS-SVC-103: the import picker marks that same place as already saved', () => {
+    // The dialog and the import have to agree: a row shown as new that the import
+    // then refuses is the drift this method exists to prevent.
+    const u = createUser(testDb).user;
+    const col = svc.createCollection(u.id, { name: 'Rome' });
+    const trip = createTrip(testDb, u.id);
+    const place = createPlace(testDb, trip.id, { name: 'Trattoria da Enzo' });
+    testDb.prepare('UPDATE places SET google_ftid = ? WHERE id = ?').run('0x1:0x2', place.id);
+    svc.savePlace(u.id, { collection_id: col.id, name: 'Dinner Tuesday', lat: 41.88, lng: 12.47, google_ftid: '0x1:0x2' });
+
+    const listed = svc.importablePlaces(u.id, col.id, trip.id).places.find(p => p.place_id === place.id);
+
+    expect(listed?.already_in_list).toBe(true);
+  });
 });
 
 // ── save-from-trip provenance + IDOR ─────────────────────────────────────────

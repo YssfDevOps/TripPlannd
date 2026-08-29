@@ -19,7 +19,7 @@ import { escapeHtml } from '@trek/shared'
 import type { Day, Reservation, RouteVia } from '../../types'
 import { POI_CATEGORY_BY_KEY, type Poi } from './poiCategories'
 import { resolveTrackColor, hasManualTrackColor } from './trackColors'
-import { OFM_POSITRON, DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, SATELLITE_TILE_URL, SATELLITE_TILE_ATTRIBUTION, SATELLITE_TILE_MAXZOOM, attributionForTile } from '../../constants/mapDefaults'
+import { OFM_POSITRON, DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, MAP_MAX_ZOOM, SATELLITE_TILE_URL, SATELLITE_TILE_ATTRIBUTION, SATELLITE_TILE_MAXZOOM, attributionForTile } from '../../constants/mapDefaults'
 import { resolveBasemap } from '../../utils/tileUrl'
 import VectorBasemap from './VectorBasemap'
 import { useSettingsStore } from '../../store/settingsStore'
@@ -831,18 +831,13 @@ export const MapView = memo(function MapView({
       id="trek-map"
       center={initialView.center}
       zoom={initialView.zoom}
-      /*
-       * The map needs its own finite maxZoom. The default basemap is an
-       * OpenFreeMap vector style drawn by a maplibre-gl-leaflet GL layer, which
-       * is not a Leaflet GridLayer and so contributes no zoom bound — unlike the
-       * raster/satellite TileLayers, which each set maxZoom={19}. Without one
-       * here, map.getMaxZoom() is Infinity on the vector basemap and
-       * leaflet.markercluster throws "Map has no maxZoom specified" the moment a
-       * trip with places renders, crashing the whole planner. Pinning 19 matches
-       * what the raster and satellite layers already cap at.
-       */
-      maxZoom={19}
       zoomControl={false}
+      // On the map itself, not left to the base layer. Leaflet reads its zoom
+      // ceiling from the map options or, failing that, from a GridLayer that
+      // brought one; a vector basemap is neither, so a map drawn by
+      // VectorBasemap had no ceiling at all. MarkerClusterGroup.onAdd throws
+      // outright on an infinite one, which took the whole planner down.
+      maxZoom={MAP_MAX_ZOOM}
       className="w-full h-full bg-[#e5e7eb]"
     >
       {/* The basemap is a vector style by default and a raster template when the
