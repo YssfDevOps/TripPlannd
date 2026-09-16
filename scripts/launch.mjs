@@ -15,7 +15,7 @@
  *   PORT        Port to serve on (default 3001).
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, cpSync, mkdirSync } from 'node:fs';
+import { existsSync, cpSync, mkdirSync, statSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import http from 'node:http';
@@ -26,6 +26,7 @@ const port = process.env.PORT || '3001';
 const url = `http://localhost:${port}`;
 const onWindows = process.platform === 'win32';
 const npm = onWindows ? 'npm.cmd' : 'npm';
+const forceRebuild = process.argv.includes('--rebuild');
 
 function run(cmd, args, cwd) {
   const res = spawnSync(cmd, args, { cwd, stdio: 'inherit', shell: onWindows });
@@ -35,18 +36,65 @@ function run(cmd, args, cwd) {
   }
 }
 
-// 1. Dependencies (first run only).
-if (!existsSync(join(root, 'node_modules'))) {
-  console.log('[TREK] First run: installing dependencies. This can take a few minutes...');
+const mtime = (p) => {
+  try {
+    return statSync(p).mtimeMs;
+  } catch {
+    return 0;
+  }
+};
+// Newest mtime under a tree, skipping build outputs and vendored dirs. Lets the
+// launcher notice when a code update (e.g. a git pull) is newer than the last build.
+function newestMtime(dir) {
+  const skip = new Set(['node_modules', 'dist', 'public', 'data', 'uploads', '.git']);
+  let newest = 0;
+  const stack = [dir];
+  while (stack.length) {
+    let entries;
+    try {
+      entries = readdirSync(stack.pop(), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (skip.has(e.name)) continue;
+      const full = join(e.parentPath ?? e.path ?? dir, e.name);
+      if (e.isDirectory()) stack.push(full);
+      else newest = Math.max(newest, mtime(full));
+    }
+  }
+  return newest;
+}
+
+// 1. Dependencies: (re)install when missing, or when the lockfile changed since
+// the last install (npm records the installed tree in node_modules/.package-lock.json).
+const nodeModules = join(root, 'node_modules');
+const installStamp = join(nodeModules, '.package-lock.json');
+const lockfile = join(root, 'package-lock.json');
+if (!existsSync(nodeModules) || mtime(lockfile) > mtime(installStamp)) {
+  console.log('[TREK] Installing/updating dependencies. This can take a few minutes...');
   run(npm, ['install'], root);
 }
 
-// 2. Build once, then stage the built client into server/public for single-port serving.
-const alreadyBuilt =
-  existsSync(join(serverDir, 'dist', 'index.js')) &&
-  existsSync(join(serverDir, 'public', 'index.html'));
-if (!alreadyBuilt || process.argv.includes('--rebuild')) {
-  console.log('[TREK] Building the app (first run or --rebuild). One moment...');
+// 2. Build, then stage the built client into server/public for single-port serving.
+// Rebuild automatically when the build is missing OR the source is newer than the
+// last build (so a code update just works — no need to pass --rebuild).
+const buildOutputs = [join(serverDir, 'dist', 'index.js'), join(serverDir, 'public', 'index.html')];
+const built = buildOutputs.every(existsSync);
+const newestSource = Math.max(
+  newestMtime(join(root, 'shared', 'src')),
+  newestMtime(join(root, 'server', 'src')),
+  newestMtime(join(root, 'client', 'src')),
+  mtime(lockfile),
+);
+const oldestBuild = Math.min(...buildOutputs.map(mtime));
+const stale = built && newestSource > oldestBuild;
+if (!built || stale || forceRebuild) {
+  console.log(
+    built && !forceRebuild
+      ? '[TREK] Code changed since the last run — rebuilding...'
+      : '[TREK] Building the app. This can take a minute...',
+  );
   run(npm, ['run', 'build'], root);
   const publicDir = join(serverDir, 'public');
   mkdirSync(publicDir, { recursive: true });
