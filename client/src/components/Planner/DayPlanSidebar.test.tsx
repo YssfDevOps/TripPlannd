@@ -87,7 +87,9 @@ vi.mock('../../hooks/useDayNotes', () => ({
 }))
 
 vi.mock('../Weather/WeatherWidget', () => ({
-  default: () => <span data-testid="weather-widget" />,
+  default: (props: { locationName?: string | null }) => (
+    <span data-testid="weather-widget" data-location={props.locationName ?? ''} />
+  ),
 }))
 
 // A stable toast object so tests can assert on the messages the sidebar raises.
@@ -403,6 +405,14 @@ describe('DayPlanSidebar', () => {
     const assignment = buildAssignment({ id: 99, day_id: 10, order_index: 0, place })
     render(<DayPlanSidebar {...makeDefaultProps({ days: [day], places: [place], assignments: { '10': [assignment] } })} />)
     expect(screen.getByText(/10:00/)).toBeInTheDocument()
+  })
+
+  it('FE-PLANNER-DAYPLAN-012b: the day-specific assignment note shows as a caption line in the row (#2163)', () => {
+    const place = buildPlace({ name: 'Louvre Museum' })
+    const day = buildDay({ id: 10, date: '2025-06-01', title: 'Day 1' })
+    const assignment = buildAssignment({ id: 99, day_id: 10, order_index: 0, place, notes: 'Book the 10:00 timed entry' })
+    render(<DayPlanSidebar {...makeDefaultProps({ days: [day], places: [place], assignments: { '10': [assignment] } })} />)
+    expect(screen.getByText('Book the 10:00 timed entry')).toBeInTheDocument()
   })
 
   it('FE-PLANNER-DAYPLAN-013: clicking a place calls onPlaceClick', async () => {
@@ -1378,39 +1388,90 @@ describe('DayPlanSidebar', () => {
     expect(onDeletePlace).toHaveBeenCalledWith(42)
   })
 
-  // ── Note card edit/delete buttons ─────────────────────────────────────
+  // ── Note card editing (#2249) ─────────────────────────
 
-  it('FE-PLANNER-DAYPLAN-064: note card edit button calls openEditNote', async () => {
+  it('FE-PLANNER-DAYPLAN-064: clicking a note row opens its edit modal', async () => {
     const user = userEvent.setup()
     const day = buildDay({ id: 10, date: '2025-06-01', title: 'Day 1' })
     const note = buildDayNote({ id: 55, day_id: 10, text: 'My note' })
     mockDayNotesState.dayNotes = { '10': [note] }
     render(<DayPlanSidebar {...makeDefaultProps({ days: [day] })} />)
-    // Find note edit button (Pencil in note-edit-buttons)
-    const noteEditBtns = document.querySelectorAll('.note-edit-buttons button')
-    if (noteEditBtns.length > 0) {
-      await user.click(noteEditBtns[0] as HTMLElement)
-      expect(mockDayNotesState.openEditNote).toHaveBeenCalled()
-    }
+    await user.click(cardRow(screen.getByText('My note')))
+    expect(mockDayNotesState.openEditNote).toHaveBeenCalledWith(10, expect.objectContaining({ id: 55 }))
   })
 
-  it('FE-PLANNER-DAYPLAN-065: deleting a note asks for confirmation before calling deleteNote', async () => {
+  // The bug: an absolutely-positioned pencil/trash pill sat on the note's own
+  // reorder chevrons, and a coarse-pointer `opacity: 1 !important` in index.css
+  // made it permanent on tablets. Nothing may float over that column again.
+  it('FE-PLANNER-DAYPLAN-064b: the note row carries no floating action pill over its reorder buttons', () => {
+    const day = buildDay({ id: 10, date: '2025-06-01', title: 'Day 1' })
+    mockDayNotesState.dayNotes = { '10': [buildDayNote({ id: 55, day_id: 10, text: 'My note' })] }
+    render(<DayPlanSidebar {...makeDefaultProps({ days: [day] })} />)
+    const row = cardRow(screen.getByText('My note'))
+    expect(document.querySelector('.note-edit-buttons')).toBeNull()
+    expect(row.querySelectorAll('[style*="position: absolute"]')).toHaveLength(0)
+    expect(row.querySelectorAll('.reorder-buttons button')).toHaveLength(2)
+    // Positional, not just by class: the reorder column owns the row's right edge.
+    expect(row.lastElementChild).toHaveClass('reorder-buttons')
+  })
+
+  it('FE-PLANNER-DAYPLAN-064e: the keyboard reaches the note and opens it with Enter', () => {
+    const day = buildDay({ id: 10, date: '2025-06-01', title: 'Day 1' })
+    mockDayNotesState.dayNotes = { '10': [buildDayNote({ id: 55, day_id: 10, text: 'My note' })] }
+    render(<DayPlanSidebar {...makeDefaultProps({ days: [day] })} />)
+    const row = cardRow(screen.getByText('My note'))
+    expect(row).toHaveAttribute('tabindex', '0')
+    // A press-scale on a draggable row fights the drag, so the row opts out (#2158).
+    expect(row).toHaveAttribute('data-no-press')
+    fireEvent.keyDown(row, { key: 'Enter' })
+    expect(mockDayNotesState.openEditNote).toHaveBeenCalledWith(10, expect.objectContaining({ id: 55 }))
+  })
+
+  it('FE-PLANNER-DAYPLAN-064c: a link inside the note body opens the link, not the edit modal', async () => {
     const user = userEvent.setup()
     const day = buildDay({ id: 10, date: '2025-06-01', title: 'Day 1' })
-    const note = buildDayNote({ id: 55, day_id: 10, text: 'My note' })
-    mockDayNotesState.dayNotes = { '10': [note] }
+    mockDayNotesState.dayNotes = { '10': [buildDayNote({ id: 55, day_id: 10, text: 'My note', time: '[docs](https://example.com)' })] }
     render(<DayPlanSidebar {...makeDefaultProps({ days: [day] })} />)
-    // Find note delete button (Trash2 in note-edit-buttons)
-    const noteEditBtns = document.querySelectorAll('.note-edit-buttons button')
-    if (noteEditBtns.length > 1) {
-      await user.click(noteEditBtns[1] as HTMLElement)
-      // Clicking delete opens a confirmation dialog rather than deleting immediately.
-      expect(mockDayNotesState.deleteNote).not.toHaveBeenCalled()
-      expect(screen.getByText('Delete note?')).toBeInTheDocument()
-      // Confirming triggers the actual delete.
-      await user.click(screen.getByRole('button', { name: /^delete$/i }))
-      expect(mockDayNotesState.deleteNote).toHaveBeenCalled()
-    }
+    await user.click(screen.getByRole('link', { name: 'docs' }))
+    expect(mockDayNotesState.openEditNote).not.toHaveBeenCalled()
+  })
+
+  it('FE-PLANNER-DAYPLAN-064d: the reorder chevrons still move the note instead of editing it', async () => {
+    const user = userEvent.setup()
+    const day = buildDay({ id: 10, date: '2025-06-01', title: 'Day 1' })
+    mockDayNotesState.dayNotes = { '10': [
+      buildDayNote({ id: 55, day_id: 10, text: 'First note', sort_order: 0 }),
+      buildDayNote({ id: 56, day_id: 10, text: 'Second note', sort_order: 1 }),
+    ] }
+    render(<DayPlanSidebar {...makeDefaultProps({ days: [day] })} />)
+    const row = cardRow(screen.getByText('Second note'))
+    await user.click(row.querySelectorAll('.reorder-buttons button')[0] as HTMLElement)
+    expect(mockDayNotesState.moveNote).toHaveBeenCalled()
+    expect(mockDayNotesState.openEditNote).not.toHaveBeenCalled()
+  })
+
+  it('FE-PLANNER-DAYPLAN-065: the note modal deletes only through the confirmation dialog', async () => {
+    const user = userEvent.setup()
+    const day = buildDay({ id: 10, date: '2025-06-01', title: 'Day 1' })
+    mockDayNotesState.dayNotes = { '10': [buildDayNote({ id: 55, day_id: 10, text: 'My note' })] }
+    mockDayNotesState.noteUi = { '10': { mode: 'edit', noteId: 55, text: 'My note', time: '', icon: 'FileText', color: null } }
+    render(<DayPlanSidebar {...makeDefaultProps({ days: [day] })} />)
+    await user.click(screen.getByRole('button', { name: /^delete$/i }))
+    expect(mockDayNotesState.deleteNote).not.toHaveBeenCalled()
+    expect(screen.getByText('Delete note?')).toBeInTheDocument()
+    const confirm = within(screen.getByText('Delete note?').closest('[class*="z-[10000]"]') as HTMLElement)
+    await user.click(confirm.getByRole('button', { name: /^delete$/i }))
+    expect(mockDayNotesState.deleteNote).toHaveBeenCalledWith(10, 55)
+    // Otherwise the edit modal is left open on a note that no longer exists.
+    expect(mockDayNotesState.cancelNote).toHaveBeenCalledWith(10)
+  })
+
+  it('FE-PLANNER-DAYPLAN-065b: a note being created offers no delete', () => {
+    const day = buildDay({ id: 10, date: '2025-06-01', title: 'Day 1' })
+    mockDayNotesState.dayNotes = { '10': [] }
+    mockDayNotesState.noteUi = { '10': { mode: 'add', text: '', time: '', icon: 'FileText', color: null } }
+    render(<DayPlanSidebar {...makeDefaultProps({ days: [day] })} />)
+    expect(screen.queryByRole('button', { name: /^delete$/i })).toBeNull()
   })
 
   // ── Drop on assignment: same-day reorder ─────────────────────────────
@@ -2888,11 +2949,34 @@ describe('DayPlanSidebar', () => {
     expect(onReorder).not.toHaveBeenCalled()
   })
 
-  it('FE-PLANNER-DAYPLAN-130: the weather badge falls back to any located trip place', () => {
+  // #2167 — the badge used to borrow ANY located trip place, so a roadtrip day
+  // without stops silently showed another city's weather. Day-local only now.
+  it('FE-PLANNER-DAYPLAN-130: no weather badge for a day without located stops or a bookend hotel (#2167)', () => {
     const located = buildPlace({ id: 5, name: 'Somewhere', lat: 48.85, lng: 2.35 })
     const day = buildDay({ id: 10, date: '2025-06-01', title: 'Day 1' })
     render(<DayPlanSidebar {...makeDefaultProps({ days: [day], places: [located] })} />)
-    expect(screen.getByTestId('weather-widget')).toBeInTheDocument()
+    expect(screen.queryByTestId('weather-widget')).not.toBeInTheDocument()
+  })
+
+  it('FE-PLANNER-DAYPLAN-130b: the weather badge anchors to the day bookend hotel, independent of the optimize setting (#2167)', () => {
+    // The hotel fallback is unconditional (matching the mobile timeline) — turn the
+    // route-optimization setting OFF to prove the weather anchor ignores it.
+    seedStore(useSettingsStore, { settings: { time_format: '24h', temperature_unit: 'celsius', optimize_from_accommodation: false } } as any)
+    const day = buildDay({ id: 10, date: '2025-06-01', title: 'Day 1' })
+    const day2 = buildDay({ id: 11, date: '2025-06-02', title: 'Day 2' })
+    const accommodations = [{ id: 1, start_day_id: 10, end_day_id: 11, place_name: 'Hotel Roma', place_lat: 41.9, place_lng: 12.5 }]
+    render(<DayPlanSidebar {...makeDefaultProps({ days: [day, day2], accommodations: accommodations as any })} />)
+    const widgets = screen.getAllByTestId('weather-widget')
+    expect(widgets.length).toBeGreaterThan(0)
+    expect(widgets[0]).toHaveAttribute('data-location', 'Hotel Roma')
+  })
+
+  it('FE-PLANNER-DAYPLAN-130c: the weather badge names the day-local stop it is anchored to (#2167)', () => {
+    const place = buildPlace({ id: 5, name: 'Louvre', lat: 48.86, lng: 2.34 })
+    const day = buildDay({ id: 10, date: '2025-06-01', title: 'Day 1' })
+    const a = buildAssignment({ id: 99, day_id: 10, order_index: 0, place })
+    render(<DayPlanSidebar {...makeDefaultProps({ days: [day], places: [place], assignments: { '10': [a] } })} />)
+    expect(screen.getByTestId('weather-widget')).toHaveAttribute('data-location', 'Louvre')
   })
 
   it('FE-PLANNER-DAYPLAN-131: a read-only trip drops the edit affordances from day and note rows', () => {
@@ -2907,6 +2991,10 @@ describe('DayPlanSidebar', () => {
     expect(screen.queryByLabelText('Add Note')).not.toBeInTheDocument()
     expect(dragRow(screen.getByText('Read only place'))).toBeNull()
     expect(screen.getByText('A note')).toBeInTheDocument()
+    // A viewer must not reach the edit modal they could never save (#2249).
+    const noteRow = cardRow(screen.getByText('A note'))
+    expect(noteRow).not.toHaveAttribute('role', 'button')
+    expect(noteRow.querySelectorAll('.reorder-buttons')).toHaveLength(0)
   })
 
   it('FE-PLANNER-DAYPLAN-132: the read-only chevron still collapses and expands the day', async () => {
@@ -3494,6 +3582,34 @@ describe('DayPlanSidebar', () => {
     })} />)
     expect(screen.getAllByText('ICE 599').length).toBeGreaterThan(0)
     expect(screen.getByText(/Reservation pending/)).toBeInTheDocument()
+  })
+
+  it('FE-PLANNER-DAYPLAN-163b: every booking on the stop gets its own chip line (#2201)', async () => {
+    const user = userEvent.setup()
+    const place = buildPlace({ id: 1, name: 'Zoo' })
+    const day = buildDay({ id: 10, date: '2025-06-01', title: 'Day 1' })
+    const a = buildAssignment({ id: 11, day_id: 10, order_index: 0, place })
+    const parking = buildReservation({
+      id: 530, type: 'parking', title: 'Parking pass', status: 'confirmed', assignment_id: 11,
+      reservation_time: '2025-06-01T09:00:00', reservation_end_time: '2025-06-01T09:30:00',
+    } as any)
+    const tickets = buildReservation({
+      id: 531, type: 'activity', title: 'Zoo tickets', status: 'pending', assignment_id: 11,
+      reservation_time: '2025-06-01T10:15:00',
+    } as any)
+    const onEditReservation = vi.fn()
+    render(<DayPlanSidebar {...makeDefaultProps({
+      // Newest first, the order the store hands them over after a local create.
+      days: [day], places: [place], assignments: { '10': [a] }, reservations: [tickets, parking],
+      onEditReservation,
+    })} />)
+    expect(screen.getByText('09:00 – 09:30')).toBeInTheDocument()
+    expect(screen.getByText('10:15')).toBeInTheDocument()
+    expect(screen.getByText(/Reservation confirmed/)).toBeInTheDocument()
+    expect(screen.getByText(/Reservation pending/)).toBeInTheDocument()
+    // Earliest first, so the first pencil belongs to the parking pass.
+    await user.click(screen.getAllByTitle('Edit')[0])
+    expect(onEditReservation).toHaveBeenCalledWith(parking)
   })
 
   it('FE-PLANNER-DAYPLAN-164: travellers on a place row are shown as avatars with an overflow count', () => {

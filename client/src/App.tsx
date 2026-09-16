@@ -19,7 +19,7 @@ import ErrorBoundary from './components/shared/ErrorBoundary'
 import { lazyWithRetry } from './utils/lazyWithRetry'
 import { useIsPhone } from './mobile/useIsPhone'
 import { TranslationProvider, useTranslation } from './i18n'
-import { authApi } from './api/client'
+import { authApi, isAuthPublicPath } from './api/client'
 import { tripRepo } from './repo/tripRepo'
 import { readStartDestination, tripStartPath, DEFAULT_START_PAGE, DEFAULT_START_TRIP_TAB, SETTINGS_WAIT_MS, START_DESTINATION_ROUTE } from './utils/startDestination'
 import { usePermissionsStore, PermissionLevel } from './store/permissionsStore'
@@ -316,24 +316,46 @@ export default function App() {
       if (config?.places_enrich_enabled !== undefined) setPlacesEnrichEnabled(config.places_enrich_enabled)
       if (config?.permissions) usePermissionsStore.getState().setPermissions(config.permissions)
 
-      if (config?.version) {
+      // A version is a short release tag and nothing else. It arrives over the
+      // wire and is written to this device's storage, so it is rebuilt from the
+      // characters a tag may contain and kept only when nothing had to be
+      // stripped. Anything else is ignored, which also keeps a malformed value
+      // from being compared against the stored marker and starting an update on
+      // every launch.
+      const reportedVersion = typeof config?.version === 'string' ? config.version : ''
+      const version = reportedVersion.replace(/[^\w.+-]/g, '').slice(0, 64)
+      if (version && version === reportedVersion) {
         const storedVersion = localStorage.getItem('trek_app_version')
-        if (storedVersion && storedVersion !== config.version) {
+        // Record the version BEFORE acting on it. The old code wrote the marker
+        // after the purge and outside its try, so a throwing setItem (private
+        // mode, blocked site data, quota) left the caches deleted, the marker
+        // unwritten and the reload unreached, and the purge then repeated on
+        // every single launch, permanently (#2228).
+        try { localStorage.setItem('trek_app_version', version) } catch { /* site data blocked */ }
+        if (storedVersion && storedVersion !== version) {
+          // A newer build is deployed. Ask the service worker to fetch it and
+          // hand over; Workbox ('autoUpdate' + skipWaiting + clientsClaim)
+          // installs the new precache and only then drops the outdated one, so
+          // there is never a moment without an app shell.
+          //
+          // This used to delete EVERY Cache Storage bucket and unregister EVERY
+          // worker instead. That left the device with no shell and no worker
+          // until a fresh ~22 MB precache finished (minutes on mobile data),
+          // and anyone who closed the app or lost signal in that window was
+          // left with a PWA that could no longer start offline at all. It also
+          // threw away the map tiles and file blobs the user had deliberately
+          // downloaded for offline use (#2228).
           try {
-            if ('caches' in window) {
-              const names = await caches.keys()
-              await Promise.all(names.map(n => caches.delete(n)))
+            const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : undefined
+            if (reg) {
+              navigator.serviceWorker.addEventListener('controllerchange', () => window.location.reload(), { once: true })
+              await reg.update()
+              return
             }
-            if ('serviceWorker' in navigator) {
-              const regs = await navigator.serviceWorker.getRegistrations()
-              await Promise.all(regs.map(r => r.unregister()))
-            }
-          } catch {}
-          localStorage.setItem('trek_app_version', config.version)
+          } catch { /* fall through to a plain reload */ }
           window.location.reload()
           return
         }
-        localStorage.setItem('trek_app_version', config.version)
       }
     }).catch(() => {})
   }, [])
@@ -380,13 +402,22 @@ export default function App() {
     || location.pathname.startsWith('/register')
     || location.pathname.startsWith('/forgot-password')
     || location.pathname.startsWith('/reset-password')
+  // No session on these, so authenticated-only widgets (system notices,
+  // background tasks, save-to-collection) have nothing to do and would only fire
+  // a doomed authenticated request on mount.
+  //
+  // Off isAuthPublicPath rather than a second hand-kept list: the two had already
+  // drifted, this one naming only /public/journey/ while the response
+  // interceptor's covers all of /public/. A route that is public to one and not
+  // to the other is exactly the seam that puts a 401 back.
+  const hideAuthedWidgets = isAuthPage || isAuthPublicPath(location.pathname)
 
   return (
     <TranslationProvider>
-      {!isAuthPage && <ErrorBoundary boundaryId="widget:system-notice" fallback={null}><SystemNoticeHost /></ErrorBoundary>}
+      {!hideAuthedWidgets && <ErrorBoundary boundaryId="widget:system-notice" fallback={null}><SystemNoticeHost /></ErrorBoundary>}
       <ErrorBoundary boundaryId="widget:toast" fallback={null}><ToastContainer /></ErrorBoundary>
-      {!isAuthPage && <ErrorBoundary boundaryId="widget:background-tasks" fallback={null}><BackgroundTasksWidget /></ErrorBoundary>}
-      {!isAuthPage && (isPhone ? <MSaveToCollectionSheet /> : <SaveToCollectionModal />)}
+      {!hideAuthedWidgets && <ErrorBoundary boundaryId="widget:background-tasks" fallback={null}><BackgroundTasksWidget /></ErrorBoundary>}
+      {!hideAuthedWidgets && (isPhone ? <MSaveToCollectionSheet /> : <SaveToCollectionModal />)}
       <ErrorBoundary boundaryId="widget:offline-banner" fallback={null}><OfflineBanner /></ErrorBoundary>
       {/* One boundary for all route chunks, above <Routes> so it stays mounted
           across navigations. react-router runs location updates inside a transition,

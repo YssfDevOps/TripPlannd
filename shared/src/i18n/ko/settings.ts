@@ -16,6 +16,7 @@ const settings: TranslationStrings = {
   'settings.plugins.subtitle': '사용 중인 플러그인의 개인 설정(API 키, 환경설정).',
   'settings.plugins.empty': '활성화된 플러그인이 없습니다.',
   'settings.plugins.saved': '설정이 저장되었습니다',
+  'settings.plugins.requiredMissing': '"{field}"은(는) 필수입니다',
   'settings.tabs.account': '계정',
   'settings.tabs.offline': '오프라인',
   'settings.tabs.about': '정보',
@@ -191,7 +192,8 @@ const settings: TranslationStrings = {
   'settings.oauth.modal.clientNamePlaceholder': '예: Claude Web, My MCP App',
   'settings.oauth.modal.redirectUris': '리디렉션 URI',
   'settings.oauth.modal.redirectUrisPlaceholder': 'https://your-app.com/callback\nhttps://your-app.com/auth',
-  'settings.oauth.modal.redirectUrisHint': '한 줄에 URI 하나. HTTPS 필수 (localhost 예외). 정확히 일치해야 합니다.',
+  'settings.oauth.modal.redirectUrisHint':
+    '한 줄에 URI 하나. HTTPS, 루프백 HTTP 또는 앱 전용 스킴(myapp://)을 쓸 수 있습니다. 루프백 URI의 포트를 빼고 정확히 일치해야 합니다.',
   'settings.oauth.modal.scopes': '허용 권한 범위',
   'settings.oauth.modal.scopesHint':
     'list_trips 및 get_trip_summary는 항상 사용 가능합니다 — 권한 범위 불필요. AI가 다른 도구를 사용하는 데 필요한 여행 ID를 찾을 수 있습니다.',
@@ -480,6 +482,14 @@ const settings: TranslationStrings = {
   'settings.offline.storage.tripsTitle': '여행',
   'settings.offline.storage.tripOn': '오프라인에 저장됨',
   'settings.offline.storage.tripOff': '저장 안 됨',
+  'settings.offline.storage.tripFinished': '종료됨. 켜야만 저장됩니다.',
+  'settings.offline.notice.stored': '이 기기에 여행 {count}개를 저장했습니다',
+  'settings.offline.notice.nothing': '저장할 항목이 없습니다. 보관할 여행을 켜세요.',
+  'settings.offline.notice.busy': '이미 동기화가 진행 중입니다. 잠시 후 다시 시도하세요.',
+  'settings.offline.notice.offline': '연결되지 않았습니다. 오프라인으로 저장하려면 연결하세요.',
+  'settings.offline.notice.signedOut': '세션이 종료되었습니다. 동기화하려면 다시 로그인하세요.',
+  'settings.offline.notice.failed': '다운로드를 끝낼 수 없었습니다. 연결을 확인하고 다시 시도하세요.',
+  'settings.offline.notice.loadFailed': '이 기기의 오프라인 저장소를 읽지 못했습니다. 보통 캐시를 지우면 해결됩니다.',
   'settings.offline.clear': '캐시 지우기',
   'settings.offline.clearConfirm':
     '모든 오프라인 여행 데이터를 지울까요? 온라인일 때 언제든지 다시 동기화할 수 있습니다.',

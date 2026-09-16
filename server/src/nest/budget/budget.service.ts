@@ -157,14 +157,18 @@ export class BudgetService {
     return new Set([...unique].filter(id => roster.has(id)));
   }
 
-  /** Replace the payer rows of an item and keep total_price = sum of payer amounts. */
+  /**
+   * Replace the payer rows of an item and keep total_price = sum of payer amounts.
+   * A negative amount is a real payer — the recipient of a refund (#2176) — and
+   * is stored as such; only a zero (or NaN) amount says nothing and is dropped.
+   */
   private writeItemPayers(itemId: number | string, tripId: string | number, payers: { user_id: number; amount: number }[]) {
     this.db.run('DELETE FROM budget_item_payers WHERE budget_item_id = ?', itemId);
     const insert = this.db.prepare('INSERT OR IGNORE INTO budget_item_payers (budget_item_id, user_id, amount) VALUES (?, ?, ?)');
     const known = this.rosterMemberIds(tripId, payers.map(p => p.user_id));
     const accepted: number[] = [];
     for (const p of payers) {
-      if (!(p.amount > 0) || !known.has(p.user_id)) continue;
+      if (!p.amount || !known.has(p.user_id)) continue;
       insert.run(itemId, p.user_id, p.amount);
       accepted.push(p.amount);
     }
@@ -365,8 +369,9 @@ export class BudgetService {
       }
 
       // total_price is derived from explicit payers when given; otherwise the caller
-      // value (planning entries, or a bill no one has paid yet).
-      const payerTotal = sumMoney((data.payers || []).filter(p => p.amount > 0).map(p => p.amount));
+      // value (planning entries, or a bill no one has paid yet). Negative payer
+      // amounts (a refund's recipient, #2176) count like any other.
+      const payerTotal = sumMoney((data.payers || []).filter(p => p.amount !== 0).map(p => p.amount));
       const total = data.payers && data.payers.length > 0 ? payerTotal : (data.total_price || 0);
 
       const knownMembers = data.members ? this.rosterMemberIds(tripId, data.members.map(m => m.user_id)) : null;
@@ -541,10 +546,42 @@ export class BudgetService {
   }
 
   deleteBudgetItem(id: string | number, tripId: string | number): boolean {
-    const item = this.db.get('SELECT id FROM budget_items WHERE id = ? AND trip_id = ?', id, tripId);
+    const item = this.db.get<{ id: number; reservation_id: number | null }>(
+      'SELECT id, reservation_id FROM budget_items WHERE id = ? AND trip_id = ?', id, tripId,
+    );
     if (!item) return false;
-    this.db.run('DELETE FROM budget_items WHERE id = ?', id);
-    return true;
+    return this.db.transaction(() => {
+      this.db.run('DELETE FROM budget_items WHERE id = ?', id);
+      // The booking keeps a copy of this expense's total in its metadata, and
+      // the reservation update path preserves that copy across edits. With the
+      // expense gone there is nothing left to mirror, so drop it here rather
+      // than leave a price on the card that no longer has anything behind it.
+      if (item.reservation_id) this.clearReservationPrice(tripId, item.reservation_id);
+      return true;
+    });
+  }
+
+  /**
+   * The counterpart to syncReservationPrice: take the mirrored total back off
+   * the booking. Non-fatal, exactly like the writer.
+   */
+  private clearReservationPrice(tripId: string | number, reservationId: number): void {
+    try {
+      const reservation = this.db.get<{ id: number; metadata: string | null }>(
+        'SELECT id, metadata FROM reservations WHERE id = ? AND trip_id = ?',
+        reservationId, tripId,
+      );
+      if (!reservation?.metadata) return;
+      const meta = JSON.parse(reservation.metadata);
+      if (!meta || typeof meta !== 'object' || meta.price === undefined) return;
+      delete meta.price;
+      delete meta.priceCurrency;
+      this.db.run('UPDATE reservations SET metadata = ? WHERE id = ?', JSON.stringify(meta), reservation.id);
+      const updatedRes = this.db.get('SELECT * FROM reservations WHERE id = ?', reservation.id);
+      this.realtime.broadcast(String(tripId), 'reservation:updated', { reservation: updatedRes }, undefined);
+    } catch (err) {
+      console.error('[budget] Failed to clear the mirrored price from the reservation:', err);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -644,6 +681,12 @@ export class BudgetService {
    * The remainder cent rotates with the item id rather than always landing on the
    * first member, so across several expenses the rounding evens out instead of
    * always favouring the same person.
+   *
+   * Floor-based (`totalCents - baseCents * n`, never `%`), so a negative total —
+   * a refund split across its beneficiaries (#2176) — still yields a remainder
+   * in [0, n) and shares that sum back to the total exactly. The client mirror
+   * (CostsPanel.helpers.splitEqualShares) must stay share-for-share identical;
+   * the parity fixture in budget.service.calc.test.ts pins both sides.
    */
   private splitEqualShares(totalCents: number, members: { user_id: number }[], itemId: number): Record<number, number> {
     const n = members.length;
@@ -754,11 +797,30 @@ export class BudgetService {
       const payers = allPayers.filter(p => p.budget_item_id === item.id);
       if (members.length === 0) continue; // planning-only entry → doesn't affect balances
 
+      // An expense nobody has paid stays out of the ledger (#2225), which is what
+      // both cost panels already promise by flagging the row "Unfinished" (the
+      // hint beside it reads: total only, not settled yet) and counting it into
+      // the Outstanding card instead (CostsPanel/costsModel.isUnfinished). The
+      // panels additionally require a non-zero total to paint that label; the
+      // ledger deliberately does not, or PUT /budget/:id/payers with an empty
+      // array (which zeroes total_price and does not re-apply it) would leave a
+      // custom split debiting its members against no credit at all.
+      // Charging its split members regardless, as #1382/#2176/#1543 left in
+      // place below, debits a share with no credit behind it: Σ(balances) drifts
+      // off zero by the unpaid total, and the greedy simplifier at the end of this
+      // method has no memory of which expense made which debt, so it pairs the
+      // inflated debtor with a creditor from some unrelated expense and offers a
+      // payment between two people who never shared a bill. Booking every flow it
+      // offered then left someone short: "everyone square" beside a balance that
+      // is not zero.
+      if (!payers.some(p => p.amount !== 0)) continue;
+
       // Payers are credited what they actually paid (converted to trip currency with
-      // the item's stored exchange rate)…
+      // the item's stored exchange rate). A negative payer — the recipient of a
+      // refund (#2176) — is debited by the same arithmetic: their credit is negative.
       let creditCents = 0;
       for (const p of payers) {
-        const paid = toTripCents(p.amount > 0 ? p.amount : 0, item.currency, item.exchange_rate);
+        const paid = toTripCents(p.amount, item.currency, item.exchange_rate);
         ensure(p.user_id, p).cents += paid;
         creditCents += paid;
       }
@@ -769,13 +831,12 @@ export class BudgetService {
       // total_price: the two are the same figure (the write path derives the total
       // from the payer sum), but converting the total separately would round to a
       // different cent on a foreign-currency expense and leave the item off by one.
-      // With nobody down as a payer there is nothing to divide, so the recorded total
-      // stands in and an unpaid bill keeps reading as money owed.
+      // Negative credits (a refund, #2176) divide the same way. Nothing falls back
+      // to total_price any more: an item with no payer behind it never reaches
+      // here since #2225. An item whose payers net to exactly zero still does, and
+      // divides zero, which is what it is worth.
       const hasCustomSplit = members.some(m => m.amount !== null && m.amount !== undefined);
-      const splitCents = creditCents > 0
-        ? creditCents
-        : toTripCents(item.total_price, item.currency, item.exchange_rate);
-      const equalShares = !hasCustomSplit ? this.splitEqualShares(splitCents, members, item.id) : {};
+      const equalShares = !hasCustomSplit ? this.splitEqualShares(creditCents, members, item.id) : {};
       for (const m of members) {
         const memberShare = hasCustomSplit && m.amount !== null && m.amount !== undefined
           ? toTripCents(m.amount, item.currency, item.exchange_rate)

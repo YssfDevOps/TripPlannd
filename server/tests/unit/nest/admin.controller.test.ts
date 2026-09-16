@@ -10,6 +10,7 @@ import { AdminController } from '../../../src/nest/admin/admin.controller';
 import type { TokenService } from '../../../src/nest/tokens/token.service';
 import type { RegistrationInvitesService } from '../../../src/nest/auth/registration-invites.service';
 import type { OauthService } from '../../../src/nest/oauth/oauth.service';
+import { KitineraryExtractorService } from '../../../src/nest/booking-import/kitinerary-extractor.service';
 import type { AdminService } from '../../../src/nest/admin/admin.service';
 import type { PluginRuntimeService } from '../../../src/nest/plugins/plugin-runtime.service';
 import type { AuditService } from '../../../src/nest/audit/audit.service';
@@ -50,8 +51,18 @@ const addonsStub = () => ({
 
 // The MCP-token routes read TokenService now, not AdminService. Stubbed via a
 // fourth, optional argument so every existing call site stays as it was.
-const adminCtl = (s: AdminService, rt?: PluginRuntimeService, addons: AddonsService = addonsStub(), tokens: Partial<TokenService> = {}, invites: Partial<RegistrationInvitesService> = {}, oauth: Partial<OauthService> = {}) =>
-  new AdminController(s, addons, rt as unknown as PluginRuntimeService, audit, notifications, tokens as TokenService, invites as RegistrationInvitesService, oauth as OauthService);
+const adminCtl = (s: AdminService, rt?: PluginRuntimeService, addons: AddonsService = addonsStub(), tokens: Partial<TokenService> = {}, invites: Partial<RegistrationInvitesService> = {}, oauth: Partial<OauthService> = {}, kitinerary: Partial<KitineraryExtractorService> = {}) =>
+  new AdminController(s, addons, rt as unknown as PluginRuntimeService, audit, notifications, tokens as TokenService, invites as RegistrationInvitesService, oauth as OauthService, kitinerary as KitineraryExtractorService);
+// #2261 — the extractor's version is what tells a stale binary from a provider
+// nobody wrote a script for; both come back empty otherwise.
+describe('AdminController system-info', () => {
+  it('ADM-SYSINFO-001: hands the extractor description through unchanged', () => {
+    const describeFn = vi.fn(() => ({ available: true, path: '/usr/local/bin/kitinerary-extractor', version: '6.3.3', configuredPath: null }));
+    const res = adminCtl({} as AdminService, undefined, addonsStub(), {}, {}, {}, { describe: describeFn }).systemInfo();
+    expect(res).toEqual({ kitinerary: { available: true, path: '/usr/local/bin/kitinerary-extractor', version: '6.3.3', configuredPath: null } });
+  });
+});
+
 function thrown(fn: () => unknown): { status: number; body: unknown } {
   try { fn(); } catch (err) {
     if (err instanceof NotFoundException) return { status: 404, body: err.getResponse() };
@@ -134,6 +145,18 @@ describe('AdminController addons + sessions + jwt + defaults', () => {
     const disable = adminCtl(svc({ updateAddon: vi.fn().mockReturnValue({ addon: { id: 'budget', enabled: false }, mcpAffected: true, auditDetails: {} }), invalidateMcpSessions: vi.fn() } as Partial<AdminService>), runtime2);
     await disable.updateAddon(user, 'budget', { enabled: false }, req);
     expect(runtime2.deactivateForDisabledAddon).toHaveBeenCalledWith('budget');
+  });
+
+  it('addon update maps the journey-dependency refusal to its status, before any audit', async () => {
+    const c = adminCtl(svc({ updateAddon: vi.fn().mockReturnValue({ error: 'Enable the Journey addon first', status: 409 }) } as Partial<AdminService>));
+    const err = await c.updateAddon(user, 'immich', { enabled: true }, req).then(
+      () => null,
+      (e: unknown) => e as HttpException,
+    );
+    expect(err).toBeInstanceOf(HttpException);
+    expect(err!.getStatus()).toBe(409);
+    expect(err!.getResponse()).toEqual({ error: 'Enable the Journey addon first' });
+    expect(writeAudit).not.toHaveBeenCalled();
   });
 
   it('oauth-sessions revoke audits; rotate-jwt maps error', () => {

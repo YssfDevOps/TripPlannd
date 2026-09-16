@@ -178,9 +178,19 @@ function isLinkLocal(ip: string): boolean {
  * safeFetchFollow) means each hop is re-resolved, re-checked against isLinkLocal,
  * and re-pinned. An http→https upgrade or a proxy redirect between LAN hosts still
  * works because the check re-runs per hop rather than locking to the first IP.
+ *
+ * `responseTimeoutMs` raises undici's own five-minute ceiling for callers that
+ * legitimately wait longer (see safeFetchLlm). Left unset it keeps undici's
+ * default, which is what every other admin-configured endpoint wants.
  */
-export async function safeFetchAdminConfigured(url: string, init?: RequestInit, maxRedirects = 5): Promise<Response> {
+export async function safeFetchAdminConfigured(
+  url: string,
+  init?: RequestInit,
+  maxRedirects = 5,
+  responseTimeoutMs?: number,
+): Promise<Response> {
   let currentUrl = url;
+  let hopInit = init;
 
   for (let hop = 0; ; hop++) {
     let parsed: URL;
@@ -203,8 +213,8 @@ export async function safeFetchAdminConfigured(url: string, init?: RequestInit, 
       throw new SsrfBlockedError('Requests to link-local / cloud-metadata addresses are not allowed');
     }
 
-    const dispatcher = createPinnedDispatcher(resolvedIp, true);
-    const response = await fetch(currentUrl, { ...init, redirect: 'manual', dispatcher } as any);
+    const dispatcher = createPinnedDispatcher(resolvedIp, true, responseTimeoutMs);
+    const response = await fetch(currentUrl, { ...hopInit, redirect: 'manual', dispatcher } as any);
 
     // Only a 3xx WITH a Location header is a redirect we follow; anything else
     // (2xx/4xx/5xx, or a 3xx with no Location) is the final response.
@@ -225,17 +235,25 @@ export async function safeFetchAdminConfigured(url: string, init?: RequestInit, 
     // Drain the redirect body so the connection can be reused/closed, then loop
     // to re-resolve + re-check + re-pin the next hop.
     void response.body?.cancel().catch(() => {});
+    hopInit = nextHopInit(hopInit, currentUrl, nextUrl, status);
     currentUrl = nextUrl;
   }
 }
 
 /**
- * The original name. Kept so no LLM call site has to change, and because the
- * shape of the problem is identical: an endpoint an admin configured, which may
+ * The original name, now the model lane specifically: the same guard as
+ * safeFetchAdminConfigured — an endpoint an admin configured, which may
  * legitimately live on loopback or the LAN, and must still never reach
- * link-local or a cloud metadata service.
+ * link-local or a cloud metadata service — with LLM_TIMEOUT_MS as the response
+ * ceiling instead of undici's five minutes, so one setting governs the whole
+ * call rather than being overruled by a default nobody chose.
+ *
+ * The ceiling is read once per call rather than per hop, so a redirect chain is
+ * measured against one value even if the variable changes mid-chain.
  */
-export const safeFetchLlm = safeFetchAdminConfigured;
+export function safeFetchLlm(url: string, init?: RequestInit, maxRedirects = 5): Promise<Response> {
+  return safeFetchAdminConfigured(url, init, maxRedirects, readEnv().integrations.llmTimeoutMs);
+}
 
 /**
  * Thrown by safeFetch() when the URL is blocked by the SSRF guard.
@@ -259,19 +277,93 @@ export interface SafeFetchOptions {
  * Pass `{ rejectUnauthorized: false }` for targets that use self-signed TLS
  * certificates (e.g. a Synology NAS on a local network). The SSRF guard still
  * applies — only the TLS certificate check is relaxed.
+ *
+ * Redirects are followed through safeFetchFollow, so every hop is re-checked and
+ * re-pinned. It used to hand the platform a `redirect: 'follow'` with a
+ * dispatcher pinned to the FIRST hop only — the same shape as
+ * GHSA-8mw6-xphx-886m, and pinning does not help there because Node skips the
+ * pinned lookup for an IP-literal host. Sixteen callers ride on this, several
+ * with a URL out of a per-user setting (Immich, Synology, AirTrail), and one
+ * (pipeAsset) streams the response back to the caller, which would have made a
+ * redirect to an internal service readable rather than blind.
  */
 export async function safeFetch(url: string, init?: RequestInit, options?: SafeFetchOptions): Promise<Response> {
-  const ssrf = await checkSsrf(url);
-  if (!ssrf.allowed) {
-    throw new SsrfBlockedError(ssrf.error ?? 'Request blocked by SSRF guard');
+  return safeFetchFollow(url, init, options);
+}
+
+/**
+ * Headers that must not survive a hop to another origin. Following a redirect
+ * by hand means the platform's own protection does not apply: undici drops
+ * `Authorization` across origins itself (Fetch, "HTTP-redirect fetch" step 13),
+ * so a manual follower that replays the caller's headers verbatim is strictly
+ * weaker than the fetch it replaced. The list is credentials-only on purpose —
+ * `User-Agent` has to survive, or the goo.gl chain in maps.service resolves to
+ * a different page than the one its coordinates are parsed out of.
+ */
+const CREDENTIAL_HEADERS = [
+  'authorization', 'proxy-authorization', 'cookie', 'cookie2',
+  'x-api-key', 'api-key', 'x-auth-token',
+];
+
+/** Headers that describe the body, and go when the body does. */
+const BODY_HEADERS = ['content-type', 'content-length', 'content-encoding', 'content-language', 'content-location'];
+
+/**
+ * Cross-origin per Fetch, with one carve-out: the same hostname moving from
+ * http to https is an upgrade, not a host change. A self-hosted IdP or ntfy
+ * behind a redirecting proxy does exactly that, and a strict origin compare
+ * would strip the credential those setups depend on.
+ */
+function isCrossOriginHop(from: string, to: string): boolean {
+  let a: URL, b: URL;
+  try { a = new URL(from); b = new URL(to); } catch { return true; }
+  if (a.origin === b.origin) return false;
+  return !(a.hostname === b.hostname && a.protocol === 'http:' && b.protocol === 'https:');
+}
+
+function stripHeaders(init: RequestInit | undefined, names: string[]): RequestInit | undefined {
+  if (!init?.headers) return init;
+  const headers = new Headers(init.headers as ConstructorParameters<typeof Headers>[0]);
+  for (const name of names) headers.delete(name);
+  return { ...init, headers };
+}
+
+/**
+ * The init for the next hop of a manual redirect follow. Both followers below
+ * go through this: following by hand opts out of the platform's own rules, so
+ * they have to be restated once rather than forgotten twice.
+ */
+function nextHopInit(
+  init: RequestInit | undefined,
+  currentUrl: string,
+  nextUrl: string,
+  status: number,
+  keepCredentials = false,
+): RequestInit | undefined {
+  let next = init;
+  if (!keepCredentials && isCrossOriginHop(currentUrl, nextUrl)) {
+    next = stripHeaders(next, CREDENTIAL_HEADERS);
   }
-  const dispatcher = createPinnedDispatcher(ssrf.resolvedIp!, options?.rejectUnauthorized ?? true);
-  return fetch(url, { ...init, dispatcher } as any);
+  // RFC 9110 15.4.4 for 303, and 15.4.2/15.4.3 plus what every client actually
+  // does for 301/302 on a POST: the next hop is a GET with no body. Replaying
+  // the body would re-POST it — a plugin's client_secret included — at a host
+  // the first one merely pointed at.
+  const method = (next?.method ?? 'GET').toUpperCase();
+  if (status === 303 || ((status === 301 || status === 302) && method !== 'GET' && method !== 'HEAD')) {
+    next = { ...stripHeaders(next, BODY_HEADERS), method: 'GET', body: undefined };
+  }
+  return next;
 }
 
 export interface SafeFetchFollowOptions extends SafeFetchOptions {
   /** Maximum number of redirects to follow before giving up. Defaults to 5. */
   maxRedirects?: number;
+  /**
+   * Keep credential headers across an origin change. Off by default, and no
+   * caller needs it today — it exists so a future one that genuinely does has
+   * to say so here rather than route around the guard.
+   */
+  keepCredentialsOnRedirect?: boolean;
   /**
    * When true, private/internal IPs that ALLOW_INTERNAL_NETWORK would normally
    * permit are still blocked (matches `checkSsrf(url, true)`). Loopback and
@@ -307,6 +399,7 @@ export async function safeFetchFollow(
   const bypassInternalIpAllowed = options?.bypassInternalIpAllowed ?? false;
 
   let currentUrl = url;
+  let hopInit = init;
 
   for (let hop = 0; ; hop++) {
     const ssrf = await checkSsrf(currentUrl, bypassInternalIpAllowed);
@@ -316,7 +409,7 @@ export async function safeFetchFollow(
 
     const dispatcher = createPinnedDispatcher(ssrf.resolvedIp!, rejectUnauthorized);
     const response = await fetch(currentUrl, {
-      ...init,
+      ...hopInit,
       redirect: 'manual',
       dispatcher,
     } as any);
@@ -344,6 +437,7 @@ export async function safeFetchFollow(
       throw new SsrfBlockedError('Invalid redirect location');
     }
     void response.body?.cancel().catch(() => {});
+    hopInit = nextHopInit(hopInit, currentUrl, nextUrl, status, options?.keepCredentialsOnRedirect);
     currentUrl = nextUrl;
   }
 }
@@ -353,8 +447,14 @@ export async function safeFetchFollow(
  * IP. This prevents DNS rebinding (TOCTOU) by ensuring the outbound connection
  * goes to the IP we checked, not a re-resolved one.
  */
-export function createPinnedDispatcher(resolvedIp: string, rejectUnauthorized = true): Agent {
+export function createPinnedDispatcher(resolvedIp: string, rejectUnauthorized = true, responseTimeoutMs?: number): Agent {
   return new Agent({
+    // undici caps the wait for response headers at 5 minutes by default, and
+    // that cap is invisible from the call site: an AbortController set to
+    // fifteen still dies at five.
+    ...(responseTimeoutMs
+      ? { headersTimeout: responseTimeoutMs, bodyTimeout: responseTimeoutMs }
+      : {}),
     connect: {
       rejectUnauthorized,
       lookup: (_hostname: string, opts: Record<string, unknown>, callback: Function) => {

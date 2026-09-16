@@ -500,6 +500,13 @@ const admin: TranslationStrings = {
   'admin.plugins.noMatchRegistry': 'Κανένα plugin στο μητρώο δεν ταιριάζει με την αναζήτησή σας.',
   'admin.plugins.restart': 'Επανεκκίνηση',
   'admin.plugins.restarted': 'Το plugin επανεκκινήθηκε',
+  'admin.plugins.instanceSettings': 'Ρυθμίσεις εγκατάστασης',
+  'admin.plugins.settingsSaved': 'Οι ρυθμίσεις αποθηκεύτηκαν',
+  'admin.plugins.settingsSavedRestarted': 'Οι ρυθμίσεις αποθηκεύτηκαν — το plugin επανεκκινήθηκε',
+  'admin.plugins.actions': 'Ενέργειες',
+  'admin.plugins.actions.confirm': 'Εκτέλεση αυτής της ενέργειας;',
+  'admin.plugins.actions.inactive': 'Ενεργοποιήστε το plugin για να εκτελέσετε τις ενέργειές του',
+  'admin.plugins.requiredMissing': '"{field}" είναι υποχρεωτικό',
   'admin.plugins.cap.readsTrips': 'Διαβάζει τα ταξίδια σας',
   'admin.plugins.cap.readsUsers': 'Διαβάζει βασικά προφίλ',
   'admin.plugins.cap.readsCosts': 'Διαβάζει τα έξοδά σας',
@@ -544,6 +551,19 @@ const admin: TranslationStrings = {
   'admin.plugins.dep.trekIncompatible': 'Απαιτεί TREK {range} — αυτός ο διακομιστής εκτελεί {host}',
   'admin.plugins.dep.trekUnknown': 'Δεν δηλώνει ποιες εκδόσεις TREK υποστηρίζει',
   'admin.plugins.installCompatible': 'Εγκατάσταση {version}',
+  'admin.plugins.installAnyway': 'Εγκατάσταση ούτως ή άλλως',
+  'admin.plugins.rangeBypass.pill': 'Έλεγχοι έκδοσης απενεργοποιημένοι',
+  'admin.plugins.rangeBypass.pillHint':
+    'Το TREK_PLUGINS_IGNORE_TREK_RANGE είναι ορισμένο — τα πρόσθετα μπορούν να εγκατασταθούν και να εκτελεστούν εκτός των εκδόσεων TREK που δηλώνουν οι δημιουργοί τους',
+  'admin.plugins.rangeBypass.title': 'Εκτός των υποστηριζόμενων εκδόσεων TREK',
+  'admin.plugins.rangeBypass.noticeTitle': 'Εγκαταστάθηκε εκτός των υποστηριζόμενων εκδόσεων TREK',
+  'admin.plugins.rangeBypass.body':
+    'Το «{name}» δηλώνει υποστήριξη για TREK {range}, ενώ αυτός ο διακομιστής εκτελεί {host}. Το TREK το επιτρέπει μόνο επειδή είναι ορισμένο το TREK_PLUGINS_IGNORE_TREK_RANGE. Ο δημιουργός δεν έχει ενημερώσει το εύρος εκδόσεων του πρόσθετου για αυτό το TREK, οπότε δεν υπάρχει εγγύηση ότι λειτουργεί — και σε σπάνιες περιπτώσεις ένα ασύμβατο πρόσθετο μπορεί να καταστρέψει δεδομένα του TREK. Συνεχίστε μόνο αν αποδέχεστε αυτόν τον κίνδυνο.',
+  'admin.plugins.rangeBypass.bodyUnknown':
+    'Το «{name}» δεν δηλώνει ποιες εκδόσεις TREK υποστηρίζει· αυτός ο διακομιστής εκτελεί {host}. Το TREK το επιτρέπει μόνο επειδή είναι ορισμένο το TREK_PLUGINS_IGNORE_TREK_RANGE. Τίποτα δεν δείχνει ότι ο δημιουργός το δοκίμασε σε αυτό το TREK, οπότε δεν υπάρχει εγγύηση ότι λειτουργεί — και σε σπάνιες περιπτώσεις ένα ασύμβατο πρόσθετο μπορεί να καταστρέψει δεδομένα του TREK. Συνεχίστε μόνο αν αποδέχεστε αυτόν τον κίνδυνο.',
+  'admin.plugins.dep.trekBypassed':
+    'Εκτός του εύρους TREK του ({range}) — έλεγχοι έκδοσης απενεργοποιημένοι',
+  'admin.plugins.dep.trekBypassedUnknown': 'Δεν δηλώνει εύρος TREK — έλεγχοι έκδοσης απενεργοποιημένοι',
   'admin.plugins.incompatible': 'Μη συμβατό',
   'admin.plugins.accessTitle': 'Σε τι έχει πρόσβαση',
   'admin.plugins.connectsTitle': 'Συνδέεται σε',
@@ -560,7 +580,7 @@ const admin: TranslationStrings = {
   'admin.addons.catalog.packing.name': 'Λίστες',
   'admin.addons.catalog.packing.description': 'Λίστες πακεταρίσματος και εργασίες προς εκτέλεση για τα ταξίδια σας',
   'admin.addons.catalog.budget.name': 'Κόστη',
-  'admin.addons.catalog.budget.description': 'Παρακολουθήστε τα έξοδα και σχεδιάστε τον προϋπολογισμό του ταξιδιού σας',
+  'admin.addons.catalog.budget.description': 'Παρακολουθήστε τα έξοδα του ταξιδιού και μοιράστε τα στους ταξιδιώτες',
   'admin.addons.catalog.documents.name': 'Έγγραφα',
   'admin.addons.catalog.documents.description': 'Αποθηκεύστε και διαχειριστείτε ταξιδιωτικά έγγραφα',
   'admin.addons.catalog.vacay.name': 'Vacay',
@@ -569,8 +589,7 @@ const admin: TranslationStrings = {
   'admin.addons.catalog.atlas.description':
     'Παγκόσμιος χάρτης με χώρες που έχετε επισκεφθεί και ταξιδιωτικά στατιστικά',
   'admin.addons.catalog.collab.name': 'Collab',
-  'admin.addons.catalog.collab.description':
-    'Σημειώσεις, δημοσκοπήσεις και συνομιλία πραγματικού χρόνου για σχεδιασμό ταξιδιού',
+  'admin.addons.catalog.collab.description': 'Σημειώσεις, ψηφοφορίες, συνομιλία και προτάσεις για κοινό σχεδιασμό',
   'admin.addons.catalog.memories.name': 'Φωτογραφίες (Immich)',
   'admin.addons.catalog.memories.description':
     'Μοιραστείτε φωτογραφίες ταξιδιού μέσω της δικής σας εγκατάστασης Immich',
@@ -579,6 +598,12 @@ const admin: TranslationStrings = {
   'admin.addons.subtitleBefore':
     'Ενεργοποιήστε ή απενεργοποιήστε λειτουργίες για να εξατομικεύσετε την εμπειρία σας στο ',
   'admin.addons.subtitleAfter': '.',
+  'admin.addons.catalog.naver_list_import.name': 'Naver List Import',
+  'admin.addons.catalog.naver_list_import.description': 'Εισαγωγή τοποθεσιών από κοινόχρηστη λίστα Naver Maps',
+  'admin.addons.catalog.airtrail.name': 'AirTrail',
+  'admin.addons.catalog.airtrail.description': 'Συγχρονισμός πτήσεων από τη δική σας εγκατάσταση AirTrail',
+  'admin.addons.catalog.llm_parsing.name': 'Ανάλυση με τεχνητή νοημοσύνη',
+  'admin.addons.catalog.llm_parsing.description': 'Διαβάζει κρατήσεις που δεν καταλαβαίνει ο ενσωματωμένος αναλυτής, με μοντέλο ΤΝ της επιλογής σας',
   'admin.addons.enabled': 'Ενεργοποιημένο',
   'admin.addons.disabled': 'Απενεργοποιημένο',
   'admin.addons.type.trip': 'Ταξίδι',
@@ -589,6 +614,7 @@ const admin: TranslationStrings = {
   'admin.addons.integrationHint': 'Υπηρεσίες backend και ενσωματώσεις API χωρίς ειδική σελίδα',
   'admin.addons.toast.updated': 'Το πρόσθετο ενημερώθηκε',
   'admin.addons.toast.error': 'Αποτυχία ενημέρωσης προσθέτου',
+  'admin.addons.group.count': '{enabled} από {total} ενεργοποιημένα',
   'admin.addons.noAddons': 'Δεν υπάρχουν διαθέσιμα πρόσθετα',
   'admin.weather.title': 'Δεδομένα Καιρού',
   'admin.weather.badge': 'Από 24 Μαρτίου 2026',
@@ -681,8 +707,7 @@ const admin: TranslationStrings = {
   'admin.addons.catalog.journey.description':
     'Παρακολούθηση ταξιδιών & ημερολόγιο ταξιδιών με αφίξεις, φωτογραφίες και καθημερινές ιστορίες',
   'admin.addons.catalog.collections.name': 'Συλλογές',
-  'admin.addons.catalog.collections.description':
-    'Προσωπική βιβλιοθήκη μερών — αποθήκευσε μέρη από όλα τα ταξίδια σε ονομασμένες λίστες, αντίγραψέ τα σε οποιοδήποτε ταξίδι, μοιράσου τα με άλλους',
+  'admin.addons.catalog.collections.description': 'Συγκεντρώστε τοποθεσίες από κάθε ταξίδι σε λίστες με όνομα και χρησιμοποιήστε τις ξανά',
   'admin.passkey.title': 'Σύνδεση με passkey',
   'admin.passkey.cardHint':
     'Επιτρέψτε στους χρήστες να συνδέονται με passkeys (WebAuthn). Απενεργοποιημένο από προεπιλογή.',

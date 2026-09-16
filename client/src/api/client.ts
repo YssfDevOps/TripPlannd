@@ -30,7 +30,7 @@ import {
   type BudgetCreateItemRequest, type BudgetUpdateItemRequest,
   type PackingCreateItemRequest, type PackingUpdateItemRequest, type PackingSetSharingRequest,
   type TodoCreateItemRequest, type TodoUpdateItemRequest,
-  type AssignmentCreateRequest, type AssignmentParticipantsRequest, type AssignmentTimeRequest, type AssignmentTransportRequest,
+  type AssignmentCreateRequest, type AssignmentNotesRequest, type AssignmentParticipantsRequest, type AssignmentTimeRequest, type AssignmentTransportRequest,
   type PlaceBulkDeleteRequest,
   type PlaceBulkUpdateRequest,
   type DayNoteCreateRequest, type DayNoteUpdateRequest,
@@ -53,6 +53,12 @@ import {
   type StorageConfigPut,
   type StorageTestResponse,
   type StorageUsage,
+  type PluginSettingsField,
+  type PluginInstanceConfigResponse,
+  type PluginInstanceConfigUpdated,
+  type PluginActionDescriptor,
+  type PluginActionResult,
+  type PluginInstallRequest,
 } from '@trek/shared'
 import { getSocketId } from './websocket'
 import { probeNow } from '../sync/connectivity'
@@ -122,7 +128,7 @@ const RATE_LIMIT_MESSAGES: Record<string, string> = {
 function translateRateLimit(): string {
   const fallback = RATE_LIMIT_MESSAGES['en']!
   try {
-    const lang = localStorage.getItem('app_language') || 'en'
+    const lang = localStorage.getItem('app_language') || localStorage.getItem('app_language_server') || 'en'
     return RATE_LIMIT_MESSAGES[lang] ?? fallback
   } catch {
     return fallback
@@ -208,16 +214,24 @@ apiClient.interceptors.response.use(
         }
       }
       // Pangolin header-auth extended compatibility mode: returns 401 with an
-      // HTML body (a JS redirect page) instead of a 302. TREK's own 401s are
-      // always application/json, so checking for text/html is unambiguous.
+      // HTML body (a JS redirect page) instead of a 302.
+      //
+      // A text/html 401 is NOT unambiguous on its own: several of TREK's own
+      // routes answer with res.status(401).send('Authentication required'),
+      // which Express labels text/html. Tearing the service worker down for one
+      // of those would cost the user offline mode for a proxy wall that isn't
+      // there, so confirm a reachable proxy first, exactly like the no-response
+      // branch above (#2228).
       if (error.response?.status === 401) {
         const ct = (error.response.headers?.['content-type'] as string | undefined) ?? ''
         if (ct.includes('text/html')) {
           const { pathname } = window.location
           if (!isAuthPublicPath(pathname) && !sessionStorage.getItem('proxy_reauth_attempted')) {
-            sessionStorage.setItem('proxy_reauth_attempted', '1')
-            await unregisterSWAndReload()
-            return Promise.reject(error)
+            if (await probeNow() === 'proxy-wall') {
+              sessionStorage.setItem('proxy_reauth_attempted', '1')
+              await unregisterSWAndReload()
+              return Promise.reject(error)
+            }
           }
         }
       }
@@ -418,7 +432,10 @@ export const daysApi = {
 
 export const placesApi = {
   list: (tripId: number | string, params?: Record<string, unknown>) => apiClient.get(`/trips/${tripId}/places`, { params }).then(r => r.data),
-  create: (tripId: number | string, data: PlaceCreateRequest) => apiClient.post(`/trips/${tripId}/places`, data).then(r => r.data),
+  // Typed: an untyped `r.data` is what let `{ place }` be read as a bare place,
+  // so every hotel booking minted an unlinked duplicate (#2243).
+  create: (tripId: number | string, data: PlaceCreateRequest): Promise<{ place: Place }> =>
+    apiClient.post(`/trips/${tripId}/places`, data).then(r => r.data),
   get: (tripId: number | string, id: number | string) => apiClient.get(`/trips/${tripId}/places/${id}`).then(r => r.data),
   update: (tripId: number | string, id: number | string, data: PlaceUpdateRequest) => apiClient.put(`/trips/${tripId}/places/${id}`, data).then(r => r.data),
   delete: (tripId: number | string, id: number | string) => apiClient.delete(`/trips/${tripId}/places/${id}`).then(r => r.data),
@@ -467,6 +484,8 @@ export const assignmentsApi = {
   getParticipants: (tripId: number | string, id: number) => apiClient.get(`/trips/${tripId}/assignments/${id}/participants`).then(r => r.data),
   setParticipants: (tripId: number | string, id: number, userIds: number[]) => apiClient.put(`/trips/${tripId}/assignments/${id}/participants`, { user_ids: userIds } satisfies AssignmentParticipantsRequest).then(r => r.data),
   updateTime: (tripId: number | string, id: number, times: AssignmentTimeRequest) => apiClient.put(`/trips/${tripId}/assignments/${id}/time`, times).then(r => r.data),
+  // Day-specific note on an assignment (#2163) — null clears it.
+  updateNotes: (tripId: number | string, id: number, data: AssignmentNotesRequest) => apiClient.put(`/trips/${tripId}/assignments/${id}/notes`, data).then(r => r.data),
   // Per-segment travel mode (#1281): mode of the leg leaving this stop (null = inherit day default).
   // direction defaults to 'outgoing' server-side, so only send it for the incoming (boundary-leg) case
   // and keep the outgoing payload byte-for-byte identical to the pre-#1281 shape.
@@ -535,8 +554,8 @@ export const adminApi = {
   plugins: () => apiClient.get('/admin/plugins').then(r => r.data),
   pluginBrowse: (refresh?: boolean) => apiClient.get('/admin/plugins/registry', { params: refresh ? { refresh: 1 } : undefined }).then(r => r.data),
   pluginDetail: (id: string) => apiClient.get(`/admin/plugins/registry/${encodeURIComponent(id)}`).then(r => r.data),
-  pluginInstall: (id: string, opts?: { version?: string; constraint?: string; withDependencies?: boolean }) =>
-    apiClient.post('/admin/plugins/install', { id, ...opts }).then(r => r.data),
+  pluginInstall: (id: string, opts?: Pick<PluginInstallRequest, 'version' | 'constraint' | 'withDependencies'>) =>
+    apiClient.post('/admin/plugins/install', { id, ...opts } satisfies PluginInstallRequest).then(r => r.data),
   pluginActivate: (id: string, consent?: boolean) => apiClient.post(`/admin/plugins/${id}/activate`, consent ? { consent: true } : {}).then(r => r.data),
   pluginDeactivate: (id: string) => apiClient.post(`/admin/plugins/${id}/deactivate`).then(r => r.data),
   // `version` pins the exact version to install (the rollback path); omitted, the server
@@ -556,6 +575,17 @@ export const adminApi = {
   // Dev-link (dev-only): register a plugin from a local built dir + hot-reload it.
   pluginLink: (path: string) => apiClient.post('/admin/plugins/link', { path }).then(r => r.data),
   pluginReload: (id: string) => apiClient.post(`/admin/plugins/${id}/reload`).then(r => r.data),
+  // The admin-owned `scope:'instance'` settings: the declared fields plus the stored
+  // values (secrets masked). Saving may RESTART a running plugin — the child gets its
+  // config once at init — and `restarted` reports whether that happened.
+  pluginConfig: (id: string): Promise<PluginInstanceConfigResponse> =>
+    apiClient.get(`/admin/plugins/${id}/config`).then(r => r.data),
+  pluginSaveConfig: (id: string, config: Record<string, unknown>): Promise<PluginInstanceConfigUpdated> =>
+    apiClient.put(`/admin/plugins/${id}/config`, config).then(r => r.data),
+  // Run a `scope:'instance'` action the plugin declared ("Purge cache"). Runs AS the
+  // clicking admin. 404 when the plugin is inactive (no child process to run it).
+  runPluginAction: (id: string, key: string): Promise<PluginActionResult> =>
+    apiClient.post(`/admin/plugins/${id}/actions/${encodeURIComponent(key)}`).then(r => r.data),
   // Operator-supplied egress hosts: a plugin talking to a SELF-HOSTED service can't name
   // the operator's hostname in its manifest, so the admin adds it here. Saving re-spawns
   // the plugin with the widened allow-list.
@@ -782,16 +812,13 @@ export interface PluginAtlasLayer {
   countries: Array<{ code: string; tone: 'default' | 'success' | 'warn' | 'danger'; label?: string }>
 }
 
-export interface PluginUserSettingField {
-  key: string; label?: string | null; input_type?: string; placeholder?: string | null;
-  hint?: string | null; required?: boolean; secret?: boolean;
-  options?: Array<{ value: string; label: string }>
-}
+/** The settings-field descriptor is the SHARED contract (both scopes emit the same
+ * shape) — aliased so existing per-user settings consumers keep their import path. */
+export type PluginUserSettingField = PluginSettingsField
 
-/** A button a plugin contributes to its own settings page ("Test connection"). */
-export interface PluginAction {
-  key: string; label: string; hint?: string; danger: boolean
-}
+/** A button a plugin contributes to a settings form ("Test connection", "Purge cache").
+ * `scope` says which form: the user tab or the admin instance-settings dialog. */
+export type PluginAction = PluginActionDescriptor
 
 export const pluginsApi = {
   // Active plugins the client renders (page nav entries, dashboard widgets).
@@ -862,7 +889,7 @@ export const pluginsApi = {
   // caller, so it reads the caller's own settings.
   runAction: (id: string, key: string) =>
     apiClient.post(`/plugin-settings/${id}/actions/${encodeURIComponent(key)}`)
-      .then(r => r.data as { ok: boolean; message?: string }),
+      .then(r => r.data as PluginActionResult),
   saveUserSettings: (id: string, config: Record<string, unknown>) =>
     apiClient.post(`/plugin-settings/${id}`, { config }).then(r => r.data as { config: Record<string, unknown> }),
   // Host-brokered outbound OAuth (the host owns the tokens; the plugin only triggers).
@@ -1108,7 +1135,8 @@ export const healthApi = {
 
 export const weatherApi = {
   // `time` (HH:MM) makes a past date answer for that hour instead of the day (#1614).
-  get: (lat: number, lng: number, date: string, time?: string): Promise<WeatherResult> => apiClient.get('/weather', { params: { lat, lng, date, time } }).then(r => parseInDev(weatherResultSchema, r.data, 'weather.get')),
+  // `lang` localizes the description; when omitted the server keeps its own default (#2167).
+  get: (lat: number, lng: number, date: string, lang?: string, time?: string): Promise<WeatherResult> => apiClient.get('/weather', { params: { lat, lng, date, lang, time } }).then(r => parseInDev(weatherResultSchema, r.data, 'weather.get')),
   getCurrent: (lat: number, lng: number, lang?: string): Promise<WeatherResult> => apiClient.get('/weather', { params: { lat, lng, lang } }).then(r => parseInDev(weatherResultSchema, r.data, 'weather.getCurrent')),
   getDetailed: (lat: number, lng: number, date: string, lang?: string): Promise<WeatherResult> => apiClient.get('/weather/detailed', { params: { lat, lng, date, lang } }).then(r => parseInDev(weatherResultSchema, r.data, 'weather.getDetailed')),
 }
@@ -1220,15 +1248,21 @@ export const tripInviteApi = {
   accept: (token: string) => apiClient.post(`/trip-invites/${token}/accept`).then(r => r.data),
 }
 
+// A channel test dials a third party the admin just typed in, and the server
+// budgets for it: up to 20s for a wrong SMTP port, 10s for a webhook or ntfy
+// endpoint. The 8s instance timeout aborted those before the reason came back,
+// so the toast could only ever say "failed" (#2196).
+const CHANNEL_TEST_TIMEOUT = 40000
+
 export const notificationsApi = {
   getPreferences: () => apiClient.get('/notifications/preferences').then(r => r.data),
   updatePreferences: (prefs: Record<string, Record<string, boolean>>) => apiClient.put('/notifications/preferences', prefs).then(r => r.data),
-  testSmtp: (email?: string) => apiClient.post('/notifications/test-smtp', { email }).then(r => checkInDev(channelTestResultSchema, r.data, 'notifications.testSmtp')),
-  testWebhook: (url?: string) => apiClient.post('/notifications/test-webhook', { url }).then(r => checkInDev(channelTestResultSchema, r.data, 'notifications.testWebhook')),
-  testNtfy: (payload: { topic?: string; server?: string | null; token?: string | null }) => apiClient.post('/notifications/test-ntfy', payload).then(r => checkInDev(channelTestResultSchema, r.data, 'notifications.testNtfy')),
+  testSmtp: (email?: string) => apiClient.post('/notifications/test-smtp', { email }, { timeout: CHANNEL_TEST_TIMEOUT }).then(r => checkInDev(channelTestResultSchema, r.data, 'notifications.testSmtp')),
+  testWebhook: (url?: string) => apiClient.post('/notifications/test-webhook', { url }, { timeout: CHANNEL_TEST_TIMEOUT }).then(r => checkInDev(channelTestResultSchema, r.data, 'notifications.testWebhook')),
+  testNtfy: (payload: { topic?: string; server?: string | null; token?: string | null }) => apiClient.post('/notifications/test-ntfy', payload, { timeout: CHANNEL_TEST_TIMEOUT }).then(r => checkInDev(channelTestResultSchema, r.data, 'notifications.testNtfy')),
   // Generic channel test — this is how a PLUGIN channel's "Send test" button works.
   testChannel: (channelId: string) =>
-    apiClient.post(`/notifications/test/${encodeURIComponent(channelId)}`)
+    apiClient.post(`/notifications/test/${encodeURIComponent(channelId)}`, undefined, { timeout: CHANNEL_TEST_TIMEOUT })
       .then(r => checkInDev(channelTestResultSchema, r.data, 'notifications.testChannel')),
 }
 

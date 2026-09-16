@@ -15,7 +15,14 @@ body { height: 100%; overflow: auto; overscroll-behavior: none; -webkit-overflow
    reloads the installed PWA. Desktop/tablet keep the rules above. */
 @media (max-width: 767px) {
   html { overflow: visible; overscroll-behavior: none; }
-  body { height: auto; overflow: visible; }
+  /* overflow-x clip (not hidden: clip creates no scroll container) so a screen
+     that accidentally overflows sideways cannot widen the document. Android's
+     forced-zoom setting reacts to a wider document by growing the layout
+     viewport that position:fixed resolves against, which pushed the top bar
+     and the dock off the right edge on narrow phones. On body, never on html:
+     body's overflow only propagates to the viewport while html stays visible,
+     and the shared body scroll lock relies on that propagation. */
+  body { height: auto; overflow: visible; overflow-x: clip; }
   /* Transparent so the shell's own background layer, which sits behind the page
      on a negative z-index, is not painted over: a negative layer goes above the
      canvas but below the background of ordinary blocks, and body is one. The
@@ -122,8 +129,32 @@ body { height: 100%; overflow: auto; overscroll-behavior: none; -webkit-overflow
   font-family: inherit !important;
   box-shadow: 0 8px 32px rgba(0,0,0,0.25) !important;
   transition: none !important;
+  max-width: min(280px, calc(100vw - 32px)) !important;
+  white-space: normal !important;
+  word-wrap: break-word !important;
 }
 .atlas-tooltip::before { border-top-color: rgba(10, 10, 20, 0.6) !important; }
+/* Bucket-list marker tooltip only — arbitrary-length user notes need a scroll
+   cap. The scroll happens on .atlas-tooltip-scroll-inner, not this element,
+   so the outer border-radius clips the scrollbar instead of it poking
+   through the rounded corner. overflow-y on the inner div is toggled
+   per-instance in useAtlas.ts, not forced here. */
+.atlas-tooltip-scrollable {
+  width: min(480px, calc(100vw - 32px)) !important;
+  max-width: min(480px, calc(100vw - 32px)) !important;
+  overflow: hidden !important;
+  pointer-events: auto !important;
+}
+.atlas-tooltip-scroll-inner {
+  max-height: min(200px, 40vh);
+  overflow-y: hidden;
+  /* Leaflet puts touch-action: none on the map container; without widening it
+     back here a touch swipe over the note can never scroll it (#2153). */
+  touch-action: pan-y;
+}
+.atlas-tooltip-scroll-inner::-webkit-scrollbar { width: 6px; }
+.atlas-tooltip-scroll-inner::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.25); border-radius: 3px; }
+html:not(.dark) .atlas-tooltip-scroll-inner::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.2); }
 html:not(.dark) .atlas-tooltip {
   background: rgba(255, 255, 255, 0.75) !important;
   color: #0f172a !important;
@@ -201,8 +232,9 @@ html.dark .border-dashed.border-gray-300 { border-color: var(--border-primary) !
 html.dark .bg-slate-50\/60, html.dark [class*="bg-slate-50/"] { background-color: transparent !important; }
 
 /* Reorder buttons: desktop = original style; touch = always visible, larger touch targets.
-   Keyed on pointer as well as width — a tablet is a wide touch device, and drag reorder is
-   off wherever the pointer is coarse (#1432), so these buttons are the only affordance left. */
+   Keyed on pointer as well as width — a tablet is a wide touch device with no hover, so
+   without this the buttons would never appear there. (Drag reorder itself is no longer off
+   on a coarse pointer: #1616 gave tablets the long-press bridge.) */
 .reorder-buttons {
   flex-direction: column;
   opacity: 0;
@@ -238,9 +270,6 @@ html.dark .bg-slate-50\/60, html.dark [class*="bg-slate-50/"] { background-color
     display: flex !important;
     align-items: center !important;
     justify-content: center !important;
-  }
-  .note-edit-buttons {
-    opacity: 1 !important;
   }
 }
 
@@ -1258,19 +1287,6 @@ img[alt="TREK"] {
 .collab-note-md-full table { border-collapse: collapse; width: 100%; margin: 0.5em 0; }
 .collab-note-md-full th, .collab-note-md-full td { border: 1px solid var(--border-primary); padding: 4px 8px; font-size: 0.9em; }
 .collab-note-md-full hr { border: none; border-top: 1px solid var(--border-primary); margin: 0.8em 0; }
-
-/* Note card actions: stacked beside the card, and big enough to aim at. */
-.note-edit-btn {
-  transition: background-color 0.12s ease, color 0.12s ease;
-}
-.note-edit-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-.note-edit-btn-danger:hover {
-  background: rgba(220, 38, 38, 0.13);
-  color: #dc2626;
-}
 
 /* Day-plan header action grid (edit / +transport / note / collapse) */
 .dp-day-actions button {

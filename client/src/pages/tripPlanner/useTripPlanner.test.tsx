@@ -1,4 +1,4 @@
-// FE-TP-HOOK-001 to FE-TP-HOOK-110
+// FE-TP-HOOK-001 to FE-TP-HOOK-115
 import React from 'react'
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { TranslationProvider } from '../../i18n/TranslationContext'
@@ -13,7 +13,7 @@ import { resetAllStores, seedStore } from '../../../tests/helpers/store'
 import { buildUser, buildTrip, buildDay, buildPlace, buildAssignment, buildReservation } from '../../../tests/helpers/factories'
 import {
   addonsApi, accommodationsApi, authApi, tripsApi, assignmentsApi,
-  healthApi, airtrailApi, mapsApi, placesApi,
+  healthApi, airtrailApi, mapsApi,
 } from '../../api/client'
 import { accommodationRepo } from '../../repo/accommodationRepo'
 import { offlineDb } from '../../db/offlineDb'
@@ -193,10 +193,10 @@ beforeEach(() => {
   vi.spyOn(tripsApi, 'getMembers').mockResolvedValue({ owner: null, members: [] })
   vi.spyOn(accommodationsApi, 'list').mockResolvedValue({ accommodations: [] })
   vi.spyOn(assignmentsApi, 'updateTime').mockResolvedValue({})
+  vi.spyOn(assignmentsApi, 'updateNotes').mockResolvedValue({})
   vi.spyOn(airtrailApi, 'sync').mockResolvedValue({ changed: 0 })
   vi.spyOn(mapsApi, 'reverse').mockResolvedValue({ name: '', address: '' } as never)
   vi.spyOn(mapsApi, 'search').mockResolvedValue({ places: [] } as never)
-  vi.spyOn(placesApi, 'create').mockResolvedValue({ id: 321 })
   vi.mocked(accommodationRepo.list).mockResolvedValue({ accommodations: [] })
   vi.mocked(getCached).mockReturnValue(undefined)
 })
@@ -825,6 +825,32 @@ describe('useTripPlanner — connection visibility', () => {
 
     expect(result.current.visibleConnections).toEqual([1])
   })
+
+  it('FE-TP-HOOK-115: a persisted route toggle keeps transit routes off the map until a day is selected (#2019)', async () => {
+    localStorage.setItem('trek:day-route:42', 'true')
+    // The fixture action is a no-op; the derivation reads the store, so this
+    // one has to write the selection like the real slice does.
+    actions.setSelectedDay.mockImplementation(dayId => {
+      useTripStore.setState({ selectedDayId: dayId as number | null })
+    })
+    seedTrip()
+
+    const { result } = await renderPlanner()
+
+    // Trip re-entry: the toggle rehydrated but nothing selected a day yet.
+    expect(result.current.routeShown).toBe(true)
+    expect(result.current.transitRoutesShown).toBe(false)
+
+    act(() => { result.current.handleSelectDay(7) })
+    expect(result.current.transitRoutesShown).toBe(true)
+
+    // Clicking the selected day's header again deselects it — the whole trip's
+    // automated transports must not flood back.
+    act(() => { result.current.handleSelectDay(null) })
+    expect(result.current.transitRoutesShown).toBe(false)
+
+    localStorage.removeItem('trek:day-route:42')
+  })
 })
 
 describe('useTripPlanner — selection handlers', () => {
@@ -1067,6 +1093,48 @@ describe('useTripPlanner — place CRUD', () => {
     expect(actions.updatePlace).toHaveBeenCalledWith(42, 1, { name: 'Nara' })
     expect(assignmentsApi.updateTime).toHaveBeenCalledWith(42, 10, { place_time: '09:00', end_time: '10:00' })
     expect(actions.refreshDays).toHaveBeenCalledWith(42)
+  })
+
+  it('FE-TP-HOOK-053b: a changed assignment note is stripped off the place and PUT per assignment (#2163)', async () => {
+    const place = buildPlace({ id: 1, lat: 1, lng: 2 })
+    seedTrip({
+      places: [place],
+      assignments: { '7': [buildAssignment({ id: 10, day_id: 7, place })] },
+    })
+
+    const { result } = await renderPlanner()
+    act(() => { result.current.openPlaceEditor(place) })
+
+    await act(async () => {
+      await result.current.handleSavePlace({ name: 'Nara', assignment_notes: 'Book the 10:00 entry' })
+    })
+
+    expect(actions.updatePlace).toHaveBeenCalledWith(42, 1, { name: 'Nara' })
+    expect(assignmentsApi.updateNotes).toHaveBeenCalledWith(42, 10, { notes: 'Book the 10:00 entry' })
+    expect(actions.refreshDays).toHaveBeenCalledWith(42)
+  })
+
+  it('FE-TP-HOOK-053c: without assignment_notes in the payload no notes write happens; an empty string clears (#2163)', async () => {
+    const place = buildPlace({ id: 1, lat: 1, lng: 2 })
+    seedTrip({
+      places: [place],
+      assignments: { '7': [buildAssignment({ id: 10, day_id: 7, place })] },
+    })
+
+    const { result } = await renderPlanner()
+    act(() => { result.current.openPlaceEditor(place) })
+
+    // The form strips an untouched note, so the key is simply absent.
+    await act(async () => {
+      await result.current.handleSavePlace({ name: 'Nara' })
+    })
+    expect(assignmentsApi.updateNotes).not.toHaveBeenCalled()
+
+    // An empty string is an explicit clear and goes out as null.
+    await act(async () => {
+      await result.current.handleSavePlace({ name: 'Nara', assignment_notes: '' })
+    })
+    expect(assignmentsApi.updateNotes).toHaveBeenCalledWith(42, 10, { notes: null })
   })
 
   it('FE-TP-HOOK-054: editing an unassigned place skips the per-assignment time write', async () => {
@@ -1464,7 +1532,7 @@ describe('useTripPlanner — bookings and transports', () => {
     const payload = actions.addReservation.mock.calls[0][1] as { create_accommodation: { place_id?: number; venue?: unknown } }
     expect(payload.create_accommodation.place_id).toBe(4)
     expect(payload.create_accommodation.venue).toBeUndefined()
-    expect(placesApi.create).not.toHaveBeenCalled()
+    expect(actions.addPlace).not.toHaveBeenCalled()
   })
 
   it('FE-TP-HOOK-080b: a venue name that only partially matches still links that place', async () => {
@@ -1498,9 +1566,77 @@ describe('useTripPlanner — bookings and transports', () => {
     })
 
     expect(mapsApi.search).toHaveBeenCalledWith('Ryokan Sakura Gion')
-    expect(placesApi.create).toHaveBeenCalledWith(42, { name: 'Ryokan Sakura', lat: 35.1, lng: 135.7, address: 'Gion' })
+    // Created through the store (addPlace), which unwraps the API's { place }
+    // envelope and pushes the place into `places` — not through placesApi
+    // directly, whose envelope used to be read as the place itself (#2243).
+    expect(actions.addPlace).toHaveBeenCalledWith(42, { name: 'Ryokan Sakura', lat: 35.1, lng: 135.7, address: 'Gion' })
+    const payload = actions.addReservation.mock.calls[0][1] as { create_accommodation: { place_id?: number; venue?: unknown } }
+    expect(payload.create_accommodation.place_id).toBe(900)
+    expect(payload.create_accommodation.venue).toBeUndefined()
+  })
+
+  it('FE-TP-HOOK-081c: the place created for a new hotel is linked, so the next save of the same hotel reuses it (#2243)', async () => {
+    vi.mocked(mapsApi.search).mockResolvedValue({
+      places: [{ lat: 35.1, lng: 135.7, address: 'Kyoto, JP' }],
+    } as never)
+    // The real addPlace puts the created place into the store; mirror that so
+    // the second save sees it the way the planner does after a create.
+    actions.addPlace.mockImplementation(async (_tripId: unknown, data: { name: string }) => {
+      const created = buildPlace({ id: 901, name: data.name, lat: 35.1, lng: 135.7 })
+      useTripStore.setState(s => ({ places: [created, ...s.places] }))
+      return created
+    })
+    seedTrip()
+
+    const { result } = await renderPlanner()
+    const save = () => result.current.handleSaveReservation({
+      title: 'Ryokan Sakura', type: 'hotel',
+      create_accommodation: { venue: { name: 'Ryokan Sakura' } },
+    } as never)
+    await act(async () => { await save() })
+    await act(async () => { await save() })
+
+    expect(actions.addPlace).toHaveBeenCalledTimes(1)
+    const first = actions.addReservation.mock.calls[0][1] as { create_accommodation: { place_id?: number } }
+    const second = actions.addReservation.mock.calls[1][1] as { create_accommodation: { place_id?: number } }
+    expect(first.create_accommodation.place_id).toBe(901)
+    expect(second.create_accommodation.place_id).toBe(901)
+  })
+
+  it('FE-TP-HOOK-081d: offline, no place is minted for a booking that cannot be written', async () => {
+    env.forcedOffline = true
+    seedTrip()
+
+    const { result } = await renderPlanner()
+    await act(async () => {
+      await result.current.handleSaveReservation({
+        title: 'Ryokan Sakura', type: 'hotel',
+        create_accommodation: { venue: { name: 'Ryokan Sakura' } },
+      } as never)
+    })
+
+    // A place created offline gets a negative temp id, and the reservation write
+    // is online-only — linking one is a foreign-key failure on the server.
+    expect(actions.addPlace).not.toHaveBeenCalled()
+    expect(mapsApi.search).not.toHaveBeenCalled()
     const payload = actions.addReservation.mock.calls[0][1] as { create_accommodation: { place_id?: number } }
-    expect(payload.create_accommodation.place_id).toBe(321)
+    expect(payload.create_accommodation.place_id).toBeUndefined()
+  })
+
+  it('FE-TP-HOOK-081e: a place still holding an offline temp id is not linked as the accommodation', async () => {
+    actions.addPlace.mockResolvedValue(buildPlace({ id: 902, name: 'Ryokan Sakura' }))
+    seedTrip({ places: [buildPlace({ id: -1758000000000, name: 'Ryokan Sakura' })] })
+
+    const { result } = await renderPlanner()
+    await act(async () => {
+      await result.current.handleSaveReservation({
+        title: 'Ryokan Sakura', type: 'hotel',
+        create_accommodation: { venue: { name: 'Ryokan Sakura' } },
+      } as never)
+    })
+
+    const payload = actions.addReservation.mock.calls[0][1] as { create_accommodation: { place_id?: number } }
+    expect(payload.create_accommodation.place_id).toBe(902)
   })
 
   it('FE-TP-HOOK-081b: a geocoded venue without a reviewed address adopts the hit address', async () => {
@@ -1518,12 +1654,12 @@ describe('useTripPlanner — bookings and transports', () => {
     })
 
     expect(mapsApi.search).toHaveBeenCalledWith('Ryokan Sakura')
-    expect(placesApi.create).toHaveBeenCalledWith(42, { name: 'Ryokan Sakura', lat: 35.1, lng: 135.7, address: 'Kyoto, JP' })
+    expect(actions.addPlace).toHaveBeenCalledWith(42, { name: 'Ryokan Sakura', lat: 35.1, lng: 135.7, address: 'Kyoto, JP' })
   })
 
   it('FE-TP-HOOK-082: a failed geocode still creates the place, a failed create yields no link', async () => {
     vi.mocked(mapsApi.search).mockRejectedValue(new Error('overpass down'))
-    vi.mocked(placesApi.create).mockRejectedValue(new Error('quota'))
+    actions.addPlace.mockRejectedValue(new Error('quota'))
     seedTrip()
 
     const { result } = await renderPlanner()
@@ -1534,7 +1670,7 @@ describe('useTripPlanner — bookings and transports', () => {
       } as never)
     })
 
-    expect(placesApi.create).toHaveBeenCalled()
+    expect(actions.addPlace).toHaveBeenCalled()
     const payload = actions.addReservation.mock.calls[0][1] as { create_accommodation: { place_id?: number } }
     expect(payload.create_accommodation.place_id).toBeUndefined()
   })

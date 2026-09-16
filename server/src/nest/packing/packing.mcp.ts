@@ -9,8 +9,9 @@ import { z } from 'zod';
 import { AuthService } from '../auth/auth.service';
 import { ADDON_IDS } from '../../addons';
 import { noAccess, permissionDenied, adminRequired } from '../../mcp/tools/_shared';
-import { PackingService } from './packing.service';
+import { PackingService, isInvalidBagRef } from './packing.service';
 import {
+  packingCreateBagRequestSchema,
   packingCreateItemRequestSchema,
   packingSetSharingRequestSchema,
   packingUpdateBagRequestSchema,
@@ -62,6 +63,9 @@ export class PackingMcp {
       tripId: z.number().int().positive(),
       name: z.string().min(1).max(200),
       category: z.string().max(100).optional().describe('Packing category (e.g. Clothes, Electronics)'),
+      bag_id: packingCreateItemRequestSchema.shape.bag_id.describe('Bag to pack the item into (ids come from list_packing_bags)'),
+      quantity: packingCreateItemRequestSchema.shape.quantity.describe('How many to pack, clamped to 1-999'),
+      weight_grams: packingCreateItemRequestSchema.shape.weight_grams.describe('Weight in grams, which feeds the bag fill bar'),
       checked: packingCreateItemRequestSchema.shape.checked.describe('Create the item already ticked off'),
       is_private: packingCreateItemRequestSchema.shape.is_private.describe('Keep the item to yourself; visibility says the same thing with more nuance'),
       visibility: packingCreateItemRequestSchema.shape.visibility.describe("Which list the item belongs to: 'common' (the group pool, the default), 'personal' (yours alone), or 'shared' (yours plus recipient_ids)"),
@@ -72,7 +76,7 @@ export class PackingMcp {
     access: { group: 'packing', mode: 'write' },
   })
   async createPackingItem(
-    { tripId, name, category, checked, is_private, visibility, recipient_ids }: { tripId: number; name: string; category?: string; checked?: boolean | number; is_private?: boolean; visibility?: PackingVisibility; recipient_ids?: number[] },
+    { tripId, name, category, bag_id, quantity, weight_grams, checked, is_private, visibility, recipient_ids }: { tripId: number; name: string; category?: string; bag_id?: number | null; quantity?: number; weight_grams?: number | null; checked?: boolean | number; is_private?: boolean; visibility?: PackingVisibility; recipient_ids?: number[] },
     ctx: McpContext,
   ) {
     if (this.auth.isDemoUser(ctx.userId)) return demoDenied();
@@ -81,15 +85,21 @@ export class PackingMcp {
     const item = this.packing.createItem(tripId, {
       name,
       category: category || 'General',
+      bag_id,
+      quantity,
+      weight_grams,
       // checked takes a boolean or the legacy 0/1, exactly as the REST body does.
       checked: checked === undefined ? undefined : !!checked,
       is_private,
       visibility,
       recipient_ids,
     }, ctx.userId);
+    // A referenced bag must exist on this trip (#2154), as on the REST route.
+    if (isInvalidBagRef(item)) return errorResult('Bag not found.');
     // A restricted item (#858) reaches its owner and recipients only; a Common
     // one answers null here and goes to the whole room.
     this.guards.safeBroadcast(tripId, 'packing:created', { item }, this.packing.viewersOf(item));
+    this.packing.broadcastBagTotals(String(tripId));
     return ok({ item });
   }
 
@@ -137,6 +147,7 @@ export class PackingMcp {
     // deleteItem hands back the row it removed, so the delete can be scoped to
     // the same people the item was ever visible to (#1976).
     this.guards.safeBroadcast(tripId, 'packing:deleted', { itemId }, this.packing.viewersOf(deleted));
+    this.packing.broadcastBagTotals(String(tripId));
     return ok({ success: true });
   }
 
@@ -176,6 +187,8 @@ export class PackingMcp {
     const wasPrivate = !!this.packing.getItemPrivacy(tripId, itemId)?.is_private;
     const item = this.packing.updateItem(tripId, itemId, fields, bodyKeys, undefined, ctx.userId);
     if (!item) return errorResult('Packing item not found.');
+    // A referenced bag must exist on this trip (#2154), as on the REST route.
+    if (isInvalidBagRef(item)) return errorResult('Bag not found.');
     this.broadcastItemUpdate(tripId, itemId, item, wasPrivate);
     return ok({ item });
   }
@@ -196,6 +209,7 @@ export class PackingMcp {
     }
     // Newly common: the members who never had the row need it created, not updated.
     if (wasPrivate) this.guards.safeBroadcast(tripId, 'packing:created', { item });
+    this.packing.broadcastBagTotals(String(tripId));
     this.guards.safeBroadcast(tripId, 'packing:updated', { item });
   }
 
@@ -226,6 +240,7 @@ export class PackingMcp {
     // it back to whoever may see it now, as the REST route does.
     this.guards.safeBroadcast(tripId, 'packing:deleted', { itemId });
     this.guards.safeBroadcast(tripId, 'packing:created', { item }, this.packing.viewersOf(item));
+    this.packing.broadcastBagTotals(String(tripId));
     return ok({ item });
   }
 
@@ -274,18 +289,19 @@ export class PackingMcp {
       tripId: z.number().int().positive(),
       name: z.string().min(1).max(100),
       color: z.string().optional(),
+      weight_limit_grams: packingCreateBagRequestSchema.shape.weight_limit_grams.describe('Allowance in grams the bag is measured against (the fill bar)'),
     },
     annotations: TOOL_ANNOTATIONS_NON_IDEMPOTENT,
     when: packingAddonOn,
     access: { group: 'packing', mode: 'write' },
   })
-  async createPackingBag({ tripId, name, color }: { tripId: number; name: string; color?: string }, ctx: McpContext) {
+  async createPackingBag({ tripId, name, color, weight_limit_grams }: { tripId: number; name: string; color?: string; weight_limit_grams?: number | null }, ctx: McpContext) {
     if (this.auth.isDemoUser(ctx.userId)) return demoDenied();
     if (!this.packing.verifyTripAccess(tripId, ctx.userId)) return noAccess();
     if (!this.guards.hasTripPermission('packing_edit', tripId, ctx.userId)) return permissionDenied();
     // createBag returns a bare row; hydrate with the empty members array that
     // listBags and the schema always carry, so the client/AI consumer matches.
-    const bag = { ...(this.packing.createBag(tripId, { name, color }) as object), members: [] };
+    const bag = { ...(this.packing.createBag(tripId, { name, color, weight_limit_grams }) as object), members: [] };
     this.guards.safeBroadcast(tripId, 'packing:bag-created', { bag });
     return ok({ bag });
   }
@@ -347,6 +363,9 @@ export class PackingMcp {
     // { bagId } matches the REST route and the plugin host (the legacy
     // registrar's { id } was the odd one out).
     this.guards.safeBroadcast(tripId, 'packing:bag-deleted', { bagId });
+    // packing_items.bag_id is ON DELETE SET NULL, so the contents land in the
+    // unassigned pile and both numbers move (#2191), as on REST and plugin RPC.
+    this.packing.broadcastBagTotals(String(tripId));
     return ok({ success: true });
   }
 
@@ -427,6 +446,7 @@ export class PackingMcp {
     const items = this.packing.applyTemplate(tripId, templateId);
     if (items === null) return errorResult('Template not found.');
     this.guards.safeBroadcast(tripId, 'packing:template-applied', { items });
+    this.packing.broadcastBagTotals(String(tripId));
     return ok({ items, count: items.length });
   }
 
@@ -515,6 +535,9 @@ export class PackingMcp {
     for (const item of created) {
       this.guards.safeBroadcast(tripId, 'packing:created', { item }, this.packing.viewersOf(item));
     }
+    // Once for the whole import, not once per item: the ping is content-free and
+    // every one of them costs each connected client a listBags round trip.
+    this.packing.broadcastBagTotals(String(tripId));
     return ok({ items: created, count: created.length });
   }
 

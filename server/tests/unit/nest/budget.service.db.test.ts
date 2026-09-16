@@ -314,8 +314,9 @@ function seedIssue1543Trip(tripCurrency: string) {
   testDb.prepare('UPDATE trips SET currency = ? WHERE id = ?').run(tripCurrency, trip.id);
   const members = [{ user_id: me.id }, { user_id: danil.id }, { user_id: serega.id }];
 
-  // 9 000 ₽ nobody has paid yet, 9 000 ₽ paid by me, and $100 paid by me. The USD row
-  // carries the rate frozen at entry time: units of USD per 1 RUB.
+  // 9 000 ₽ nobody has paid yet (outstanding, settled by nobody, #2225), 9 000 ₽ paid
+  // by me, and $100 paid by me. The USD row carries the rate frozen at entry time:
+  // units of USD per 1 RUB.
   budget.createBudgetItem(trip.id, { name: 'Проезд обратно', total_price: 9000, currency: 'RUB', members });
   budget.createBudgetItem(trip.id, { name: 'Проезд туда', currency: 'RUB', payers: [{ user_id: me.id, amount: 9000 }], members });
   budget.createBudgetItem(trip.id, {
@@ -332,18 +333,20 @@ describe('calculateSettlement with a foreign-currency expense (#1543)', () => {
     const result = budget.calculateSettlement(trip.id, { base: 'RUB', tripCurrency: 'RUB', rates: RATES.RUB });
     const balanceOf = (id: number) => result.balances.find(b => b.user_id === id)!.balance;
 
-    // Total spend is 9 000 + 9 000 + $100 (≈7 668 ₽), so each of the three owes a third
-    // of it and I am owed back everything I fronted beyond my own share. The bug divided
-    // the RUB shares by the USD rate and reported +451 092 / −230 080 / −230 012 instead.
-    // Tolerance is a rouble: the cent-rotation in splitEqualShares moves the odd cent of
-    // the $100 between members, which the USD rate magnifies ~77x.
-    const totalSpend = 18000 + 100 / RATES.RUB.USD;
-    const share = totalSpend / 3;
-    expect(balanceOf(me.id)).toBeCloseTo(9000 + 100 / RATES.RUB.USD - share, -1);
+    // What actually settles is 9 000 ₽ + $100 (≈7 668 ₽): the third expense is the
+    // 9 000 ₽ nobody has paid, which is outstanding rather than owed (#2225). Each of
+    // the three owes a third of that, and I am owed back everything I fronted beyond my
+    // own share. The bug divided the RUB shares by the USD rate and reported +451 092 /
+    // −230 080 / −230 012 instead. Tolerance is a rouble: the cent-rotation in
+    // splitEqualShares moves the odd cent of the $100 between members, which the USD
+    // rate magnifies ~77x.
+    const settledSpend = 9000 + 100 / RATES.RUB.USD;
+    const share = settledSpend / 3;
+    expect(balanceOf(me.id)).toBeCloseTo(settledSpend - share, -1);
     expect(balanceOf(danil.id)).toBeCloseTo(-share, -1);
     expect(balanceOf(serega.id)).toBeCloseTo(-share, -1);
-    // The 9 000 ₽ expense nobody paid is the only imbalance in the trip.
-    expect(result.balances.reduce((a, b) => a + b.balance, 0)).toBeCloseTo(-9000, 1);
+    // Nothing is left over: every rouble owed is a rouble somebody is owed.
+    expect(result.balances.reduce((a, b) => a + Math.round(b.balance * 100), 0)).toBe(0);
   });
 
   it('BUDGET-SVC-DB-005: reports the same balances when the display currency differs from the trip currency', () => {
@@ -353,7 +356,7 @@ describe('calculateSettlement with a foreign-currency expense (#1543)', () => {
     const inEur = budget.calculateSettlement(trip.id, { base: 'EUR', tripCurrency: 'RUB', rates: RATES.EUR });
     const danilEur = inEur.balances.find(b => b.user_id === danil.id)!.balance;
 
-    const shareRub = (18000 + 100 / RATES.RUB.USD) / 3;
+    const shareRub = (9000 + 100 / RATES.RUB.USD) / 3;
     expect(danilEur).toBeCloseTo(-shareRub / RATES.EUR.RUB, 0);
   });
 });
@@ -578,6 +581,177 @@ describe('settlement parties are confined to the trip', () => {
     expect(item.payers.map(p => p.user_id)).toEqual([alice.id]);
     // total_price is the sum of the payers that actually landed.
     expect(item.total_price).toBe(40);
+  });
+});
+
+// ── Refunds persist as negative expenses (#2176) ─────────────────────────────
+// The write path used to filter payers on amount > 0 and re-derive total_price
+// from the survivors, silently turning a negative entry into a 0 € one with no
+// payer row.
+
+describe('negative amounts persist end-to-end (#2176)', () => {
+  it('BUDGET-SVC-DB-032: stores a negative payer row and the negative total', () => {
+    const { user: alice } = createUser(testDb, { username: 'alice' });
+    const trip = createTrip(testDb, alice.id);
+
+    const item = budget.createBudgetItem(trip.id, {
+      name: 'Hotel partial refund',
+      total_price: -100,
+      payers: [{ user_id: alice.id, amount: -100 }],
+    }) as { id: number; payers: { user_id: number; amount: number }[]; total_price: number };
+
+    expect(item.total_price).toBe(-100);
+    expect(item.payers).toEqual([expect.objectContaining({ user_id: alice.id, amount: -100 })]);
+    const row = testDb.prepare('SELECT total_price FROM budget_items WHERE id = ?').get(item.id) as { total_price: number };
+    expect(row.total_price).toBe(-100);
+  });
+
+  it('BUDGET-SVC-DB-033: an update keeps a negative payer instead of nulling the entry', () => {
+    const { user: alice } = createUser(testDb, { username: 'alice' });
+    const { user: bob } = createUser(testDb, { username: 'bob' });
+    const trip = createTrip(testDb, alice.id);
+    addTripMember(testDb, trip.id, bob.id);
+    const item = budget.createBudgetItem(trip.id, {
+      name: 'Refund', total_price: -60, payers: [{ user_id: alice.id, amount: -60 }],
+    }) as { id: number };
+
+    const updated = budget.updateBudgetItem(item.id, trip.id, {
+      payers: [{ user_id: alice.id, amount: -40 }, { user_id: bob.id, amount: -20 }],
+    }) as { payers: { user_id: number; amount: number }[]; total_price: number };
+
+    expect(updated.total_price).toBe(-60);
+    expect(updated.payers).toHaveLength(2);
+    expect(updated.payers.map(p => p.amount).sort((a, b) => a - b)).toEqual([-40, -20]);
+  });
+
+  it('BUDGET-SVC-DB-034: mixed-sign payers derive the netted total', () => {
+    // Alice fronted 100 but bob pocketed a 30 refund on the same receipt.
+    const { user: alice } = createUser(testDb, { username: 'alice' });
+    const { user: bob } = createUser(testDb, { username: 'bob' });
+    const trip = createTrip(testDb, alice.id);
+    addTripMember(testDb, trip.id, bob.id);
+
+    const item = budget.createBudgetItem(trip.id, {
+      name: 'Tickets', payers: [{ user_id: alice.id, amount: 100 }, { user_id: bob.id, amount: -30 }],
+    }) as { payers: { user_id: number }[]; total_price: number };
+
+    expect(item.payers).toHaveLength(2);
+    expect(item.total_price).toBe(70);
+  });
+
+  it('BUDGET-SVC-DB-035: a zero-amount payer is still dropped', () => {
+    const { user: alice } = createUser(testDb, { username: 'alice' });
+    const { user: bob } = createUser(testDb, { username: 'bob' });
+    const trip = createTrip(testDb, alice.id);
+    addTripMember(testDb, trip.id, bob.id);
+
+    const item = budget.createBudgetItem(trip.id, {
+      name: 'Dinner', payers: [{ user_id: alice.id, amount: 90 }, { user_id: bob.id, amount: 0 }],
+    }) as { payers: { user_id: number }[]; total_price: number };
+
+    expect(item.payers.map(p => p.user_id)).toEqual([alice.id]);
+    expect(item.total_price).toBe(90);
+  });
+
+  it('BUDGET-SVC-DB-036: a negative expense settles against real rows — Σ balances = 0', () => {
+    const { user: alice } = createUser(testDb, { username: 'alice' });
+    const { user: bob } = createUser(testDb, { username: 'bob' });
+    const trip = createTrip(testDb, alice.id);
+    addTripMember(testDb, trip.id, bob.id);
+    budget.createBudgetItem(trip.id, {
+      name: 'Dinner', payers: [{ user_id: alice.id, amount: 90 }],
+      member_ids: [alice.id, bob.id],
+    });
+    budget.createBudgetItem(trip.id, {
+      name: 'Refund', payers: [{ user_id: alice.id, amount: -30 }],
+      member_ids: [alice.id, bob.id],
+    });
+
+    const result = budget.calculateSettlement(trip.id);
+    const balance = (uid: number) => result.balances.find(b => b.user_id === uid)!.balance;
+
+    // 90 out, 30 back, both split evenly: bob nets 45 - 15 = 30 owed to alice.
+    expect(balance(alice.id)).toBe(30);
+    expect(balance(bob.id)).toBe(-30);
+    expect(result.balances.reduce((a, b) => a + Math.round(b.balance * 100), 0)).toBe(0);
+    expect(result.flows).toEqual([
+      expect.objectContaining({ amount: 30, from: expect.objectContaining({ user_id: bob.id }), to: expect.objectContaining({ user_id: alice.id }) }),
+    ]);
+  });
+});
+
+describe('deleting an expense takes its price off the booking (#2233)', () => {
+  it('BUDGET-SVC-DB-040: the mirrored price and currency are cleared, the rest of the metadata stays', () => {
+    // The reservation update path keeps metadata.price across booking edits, so
+    // the expense side has to remove it when the expense itself goes away.
+    // Without this the card would show a price with nothing behind it, for good.
+    const { user } = createUser(testDb, { username: 'owner' });
+    const trip = createTrip(testDb, user.id, { title: 'Trip' });
+    const res = testDb.prepare(
+      "INSERT INTO reservations (trip_id, title, type, metadata) VALUES (?, 'Flight', 'flight', ?)",
+    ).run(trip.id, JSON.stringify({ airline: 'CZ', seat: '12A', price: '2040', priceCurrency: 'CNY' }));
+    const reservationId = Number(res.lastInsertRowid);
+
+    const item = budget.createBudgetItem(trip.id, { name: 'Flight', total_price: 2040 });
+    testDb.prepare('UPDATE budget_items SET reservation_id = ? WHERE id = ?').run(reservationId, item.id);
+
+    expect(budget.deleteBudgetItem(item.id, trip.id)).toBe(true);
+
+    const after = testDb.prepare('SELECT metadata FROM reservations WHERE id = ?').get(reservationId) as { metadata: string };
+    expect(JSON.parse(after.metadata)).toEqual({ airline: 'CZ', seat: '12A' });
+  });
+
+  it('BUDGET-SVC-DB-041: an expense that was never linked to a booking deletes as before', () => {
+    const { user } = createUser(testDb, { username: 'owner' });
+    const trip = createTrip(testDb, user.id, { title: 'Trip' });
+    const item = budget.createBudgetItem(trip.id, { name: 'Coffee', total_price: 4 });
+
+    expect(budget.deleteBudgetItem(item.id, trip.id)).toBe(true);
+    expect(testDb.prepare('SELECT id FROM budget_items WHERE id = ?').get(item.id)).toBeUndefined();
+  });
+});
+
+describe('an expense nobody paid stays out of the ledger (#2225)', () => {
+  it('BUDGET-SVC-DB-037: an unpaid expense moves neither the balances nor the offered flows', () => {
+    const { user: alice } = createUser(testDb, { username: 'alice' });
+    const { user: bob } = createUser(testDb, { username: 'bob' });
+    const { user: carol } = createUser(testDb, { username: 'carol' });
+    const trip = createTrip(testDb, alice.id, { title: 'Trip' });
+    addTripMember(testDb, trip.id, bob.id);
+    addTripMember(testDb, trip.id, carol.id);
+
+    budget.createBudgetItem(trip.id, {
+      name: 'Dinner', payers: [{ user_id: alice.id, amount: 120 }],
+      member_ids: [alice.id, bob.id, carol.id],
+    });
+    const before = budget.calculateSettlement(trip.id);
+
+    // The row from the issue: a recorded total left on "No one paid yet", split
+    // between the two people who were actually there.
+    const unpaid = budget.createBudgetItem(trip.id, {
+      name: 'Taxi', total_price: 161.57, payers: [], member_ids: [bob.id, carol.id],
+    }) as { id: number; payers: unknown[]; total_price: number };
+    expect(unpaid.payers).toEqual([]);
+    expect(unpaid.total_price).toBe(161.57);
+
+    // Re-saving it from the edit modal (payers cleared, total re-sent) must not
+    // let writeItemPayers derive the total back down to 0.
+    const resaved = budget.updateBudgetItem(unpaid.id, trip.id, {
+      total_price: 161.57, payers: [], member_ids: [bob.id, carol.id],
+    }) as { payers: unknown[]; total_price: number };
+    expect(resaved.payers).toEqual([]);
+    expect(resaved.total_price).toBe(161.57);
+    const payerRows = testDb
+      .prepare('SELECT count(*) AS cnt FROM budget_item_payers WHERE budget_item_id = ?')
+      .get(unpaid.id) as { cnt: number };
+    expect(payerRows.cnt).toBe(0);
+
+    // 161.57 with no credit behind it used to push bob and carol 80.79/80.78 further
+    // into the red and hand the whole of it to alice, who never fronted a rouble of it.
+    const after = budget.calculateSettlement(trip.id);
+    expect(after.balances).toEqual(before.balances);
+    expect(after.flows).toEqual(before.flows);
+    expect(after.balances.reduce((a, b) => a + Math.round(b.balance * 100), 0)).toBe(0);
   });
 });
 

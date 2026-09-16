@@ -82,7 +82,7 @@ describe('PlaceRow', () => {
   const props = {
     assignment: assignment(),
     fullPlace: undefined,
-    linkedRes: null,
+    linkedReservations: [],
     chrome: chrome(),
     reorder: REORDER,
     onOpen: vi.fn(),
@@ -116,7 +116,7 @@ describe('PlaceRow', () => {
 
   it('FE-MOB-PLROW-007: a linked booking replaces the subtitle and adds the booking badge', () => {
     const linkedRes = { id: 31, status: 'confirmed', confirmation_number: 'X9K' } as unknown as Reservation
-    render(<PlaceRow {...props} linkedRes={linkedRes} />)
+    render(<PlaceRow {...props} linkedReservations={[linkedRes]} />)
 
     expect(screen.getByText('dayplan.confirmed · #X9K')).toBeInTheDocument()
     expect(screen.getByText('mobileTrip.resBadge')).toBeInTheDocument()
@@ -124,7 +124,7 @@ describe('PlaceRow', () => {
 
   it('FE-MOB-PLROW-008: a pending booking without a number shows just the status', () => {
     const linkedRes = { id: 31, status: 'pending', confirmation_number: null } as unknown as Reservation
-    render(<PlaceRow {...props} linkedRes={linkedRes} />)
+    render(<PlaceRow {...props} linkedReservations={[linkedRes]} />)
 
     expect(screen.getByText('dayplan.pendingRes')).toBeInTheDocument()
   })
@@ -518,5 +518,16 @@ describe('NoteRow', () => {
 
     expect(onEdit).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('reorder')).toBeInTheDocument()
+  })
+
+  it('FE-MOB-PLROW-041: a link in the note body opens the link instead of the sheet', () => {
+    const onEdit = vi.fn()
+    render(<NoteRow {...base} note={note({ time: 'See [the map](https://example.com)' })} chrome={chrome(true)} onEdit={onEdit} />)
+
+    fireEvent.click(screen.getByRole('link', { name: 'the map' }))
+    expect(onEdit).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByText('Buy museum tickets'))
+    expect(onEdit).toHaveBeenCalledTimes(1)
   })
 })

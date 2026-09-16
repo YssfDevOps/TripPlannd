@@ -8,7 +8,7 @@ import { useToast } from '../../components/shared/Toast'
 import { Map, Ticket, PackageCheck, Wallet, FolderOpen, Users, Train } from 'lucide-react'
 import { resolvePluginIcon } from '../../components/shared/PluginIcon'
 import { useTranslation, translateApiError } from '../../i18n'
-import { addonsApi, accommodationsApi, authApi, tripsApi, assignmentsApi, healthApi, airtrailApi, mapsApi, placesApi } from '../../api/client'
+import { addonsApi, accommodationsApi, authApi, tripsApi, assignmentsApi, healthApi, airtrailApi, mapsApi } from '../../api/client'
 import { parsedItemToDraft, isTransportItem, isUnplaceableItem, type BookingReviewDraft } from '../../components/Planner/parsedItemToDraft'
 import type { BookingImportPreviewItem } from '@trek/shared'
 import { accommodationRepo } from '../../repo/accommodationRepo'
@@ -194,7 +194,11 @@ export function useTripPlanner() {
     if (activeTab === 'finanzplan') tripActions.loadBudgetItems?.(tripId)
     if (activeTab === 'dateien' && (!files || files.length === 0)) tripActions.loadFiles?.(tripId)
   }, [tripId])
-  const { leftWidth, rightWidth, leftCollapsed, rightCollapsed, setLeftCollapsed, setRightCollapsed, startResizeLeft, startResizeRight } = useResizablePanels()
+  const {
+    leftWidth, rightWidth, leftCollapsed, rightCollapsed, setLeftCollapsed, setRightCollapsed,
+    leftHidden, rightHidden, toggleLeft, toggleRight, narrow: narrowPanels,
+    startResizeLeft, startResizeRight,
+  } = useResizablePanels()
   const { selectedPlaceId, selectedAssignmentId, setSelectedPlaceId, selectAssignment } = usePlaceSelection()
   const [showDayDetail, setShowDayDetail] = useState<Day | null>(null)
   const [dayDetailCollapsed, setDayDetailCollapsed] = useState(false)
@@ -306,6 +310,12 @@ export function useTripPlanner() {
   const autoShowRoute = useCallback(() => {
     setRouteChoice(prev => (prev === null ? true : prev))
   }, [])
+  // What the planner maps actually draw. The persisted toggle can rehydrate as
+  // true while no day is selected yet (trip re-entry resets the selection, and
+  // a second click on the day header clears it) — without a day context the
+  // per-day transit filter is off, so the map would draw every automated
+  // transport in the trip (#2019).
+  const transitRoutesShown = routeShown && selectedDayId != null
   const [routeProfile, setRouteProfile] = useState<string>('driving')
   const [fitKey, setFitKey] = useState<number>(0)
   const initialFitTripId = useRef<number | null>(null)
@@ -574,12 +584,19 @@ export function useTripPlanner() {
     const pendingFiles = data._pendingFiles
     delete data._pendingFiles
     if (editingPlace) {
-      // Always strip time fields from place update — time is per-assignment only
-      const { place_time, end_time, ...placeData } = data
+      // Always strip time fields from place update — time is per-assignment only.
+      // Same for the day-specific note (#2163): it belongs to the assignment,
+      // never to the pool place.
+      const { place_time, end_time, assignment_notes, ...placeData } = data
       await tripActions.updatePlace(tripId, editingPlace.id, placeData)
       // If editing from assignment context, save time per-assignment
       if (editingAssignmentId) {
         await assignmentsApi.updateTime(tripId, editingAssignmentId, { place_time: place_time || null, end_time: end_time || null })
+        // The form only includes assignment_notes when the user changed it, so
+        // an untouched note never produces a PUT (#2163). '' clears like null.
+        if (assignment_notes !== undefined) {
+          await assignmentsApi.updateNotes(tripId, editingAssignmentId, { notes: assignment_notes || null })
+        }
         await tripActions.refreshDays(tripId)
       }
       // Upload pending files with place_id
@@ -903,8 +920,18 @@ export function useTripPlanner() {
     if (n) {
       const existing = places.find(p => p.name?.trim().toLowerCase() === n)
         ?? places.find(p => p.name && (p.name.toLowerCase().includes(n) || n.includes(p.name.toLowerCase())))
-      if (existing) return existing.id
+      // Only a server-side id may be linked. A negative id is an offline temp id
+      // (mutationQueue.nextTempId): the reservation write is online-only, the queue
+      // rewrites temp ids in a URL but never inside another entity's body, and
+      // day_accommodations.place_id carries a foreign key — so a temp id here is a
+      // rolled-back insert and a 500 instead of a saved booking.
+      if (existing && existing.id > 0) return existing.id
     }
+    // Offline the booking itself cannot be written (reservations are online-only),
+    // so minting a place here would only leave an orphan behind on the next flush
+    // — and its temp id could never be linked anyway. Link nothing, and skip the
+    // geocode round-trip too; the retry online matches this venue by name.
+    if (isEffectivelyOffline()) return null
     let lat: number | null = null
     let lng: number | null = null
     let address: string | null = venue.address ?? null
@@ -920,8 +947,14 @@ export function useTripPlanner() {
       }
     } catch { /* geocode failure is non-fatal — create the place without coords */ }
     try {
-      const place = await placesApi.create(tripId, { name: name || address || 'Accommodation', lat, lng, address } as never)
-      return (place as { id?: number })?.id ?? null
+      // Through the store, not placesApi directly: the API answers { place },
+      // and reading .id off that wrapper linked nothing — every save of the
+      // hotel then minted another orphan place, because the store never
+      // learned about the previous one and the name match above could not
+      // find it. addPlace unwraps the response and puts the place into
+      // `places`, so the next save reuses it.
+      const place = await tripActions.addPlace(tripId, { name: name || address || 'Accommodation', lat, lng, address })
+      return place && place.id > 0 ? place.id : null
     } catch { return null }
   }
 
@@ -1052,7 +1085,9 @@ export function useTripPlanner() {
     enabledAddons, collabFeatures, tripAccommodations, setTripAccommodations,
     allowedFileTypes, tripMembers, setTripMembers, refreshMembers, loadAccommodations,
     TRANSPORT_TYPES, TRIP_TABS, activeTab, setActiveTab, handleTabChange,
-    leftWidth, rightWidth, leftCollapsed, rightCollapsed, setLeftCollapsed, setRightCollapsed, startResizeLeft, startResizeRight,
+    leftWidth, rightWidth, leftCollapsed, rightCollapsed, setLeftCollapsed, setRightCollapsed,
+    leftHidden, rightHidden, toggleLeft, toggleRight, narrowPanels,
+    startResizeLeft, startResizeRight,
     selectedPlaceId, selectedAssignmentId, setSelectedPlaceId, selectAssignment,
     showDayDetail, setShowDayDetail, dayDetailCollapsed, setDayDetailCollapsed,
     showPlaceForm, setShowPlaceForm, editingPlace, setEditingPlace,
@@ -1067,7 +1102,7 @@ export function useTripPlanner() {
     transportModalDayId, setTransportModalDayId,
     transportModalAutomated, setTransportModalAutomated, transitPrefill, setTransitPrefill, transitJourney, setTransitJourney,
     reservationPrefill, transportPrefill, importReviewActive, startImportReview, advanceImportReview,
-    routeShown, setRouteShown, autoShowRoute, routeProfile, setRouteProfile, routeVias, fitKey, setFitKey,
+    routeShown, setRouteShown, autoShowRoute, transitRoutesShown, routeProfile, setRouteProfile, routeVias, fitKey, setFitKey,
     mobileSidebarOpen, setMobileSidebarOpen, mobilePlanScrollTopRef, mobilePlacesScrollTopRef,
     deletePlaceId, setDeletePlaceId, deletePlaceIds, setDeletePlaceIds,
     visibleConnections, toggleConnection, allConnectionsShown, toggleAllConnections, mapTransportDetail, setMapTransportDetail,

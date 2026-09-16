@@ -449,6 +449,13 @@ const admin: TranslationStrings = {
   'admin.plugins.noMatchRegistry': 'Ningún plugin del registro coincide con tu búsqueda.',
   'admin.plugins.restart': 'Reiniciar',
   'admin.plugins.restarted': 'Plugin reiniciado',
+  'admin.plugins.instanceSettings': 'Ajustes de la instancia',
+  'admin.plugins.settingsSaved': 'Ajustes guardados',
+  'admin.plugins.settingsSavedRestarted': 'Ajustes guardados — plugin reiniciado',
+  'admin.plugins.actions': 'Acciones',
+  'admin.plugins.actions.confirm': '¿Ejecutar esta acción?',
+  'admin.plugins.actions.inactive': 'Activa el plugin para ejecutar sus acciones',
+  'admin.plugins.requiredMissing': '"{field}" es obligatorio',
   'admin.plugins.cap.readsTrips': 'Lee tus viajes',
   'admin.plugins.cap.readsUsers': 'Lee perfiles básicos',
   'admin.plugins.cap.readsCosts': 'Lee tus gastos',
@@ -493,6 +500,20 @@ const admin: TranslationStrings = {
   'admin.plugins.dep.trekIncompatible': 'Necesita TREK {range} — este servidor ejecuta {host}',
   'admin.plugins.dep.trekUnknown': 'No indica qué versiones de TREK admite',
   'admin.plugins.installCompatible': 'Instalar {version}',
+  'admin.plugins.installAnyway': 'Instalar de todos modos',
+  'admin.plugins.rangeBypass.pill': 'Comprobaciones de versión desactivadas',
+  'admin.plugins.rangeBypass.pillHint':
+    'TREK_PLUGINS_IGNORE_TREK_RANGE está definido — los plugins pueden instalarse y ejecutarse fuera de las versiones de TREK declaradas por sus autores',
+  'admin.plugins.rangeBypass.title': 'Fuera de las versiones de TREK compatibles',
+  'admin.plugins.rangeBypass.noticeTitle': 'Instalado fuera de las versiones de TREK compatibles',
+  'admin.plugins.rangeBypass.body':
+    '«{name}» declara compatibilidad con TREK {range}, y este servidor ejecuta {host}. TREK lo deja pasar solo porque TREK_PLUGINS_IGNORE_TREK_RANGE está definido. Su autor no ha actualizado el rango de versiones del plugin para este TREK, así que no hay garantía de que funcione — y en casos raros un plugin incompatible puede corromper los datos de TREK. Continúa solo si aceptas ese riesgo.',
+  'admin.plugins.rangeBypass.bodyUnknown':
+    '«{name}» no declara qué versiones de TREK admite; este servidor ejecuta {host}. TREK lo deja pasar solo porque TREK_PLUGINS_IGNORE_TREK_RANGE está definido. Nada indica que su autor lo haya probado en este TREK, así que no hay garantía de que funcione — y en casos raros un plugin incompatible puede corromper los datos de TREK. Continúa solo si aceptas ese riesgo.',
+  'admin.plugins.dep.trekBypassed':
+    'Fuera de su rango de TREK ({range}) — comprobaciones de versión desactivadas',
+  'admin.plugins.dep.trekBypassedUnknown':
+    'No declara ningún rango de TREK — comprobaciones de versión desactivadas',
   'admin.plugins.incompatible': 'Incompatible',
   'admin.plugins.accessTitle': 'A qué puede acceder',
   'admin.plugins.connectsTitle': 'Se conecta a',
@@ -507,6 +528,12 @@ const admin: TranslationStrings = {
   'admin.addons.subtitle': 'Activa o desactiva funciones para personalizar tu experiencia en TREK.',
   'admin.addons.subtitleBefore': 'Activa o desactiva funciones para personalizar tu experiencia en ',
   'admin.addons.subtitleAfter': '.',
+  'admin.addons.catalog.naver_list_import.name': 'Naver List Import',
+  'admin.addons.catalog.naver_list_import.description': 'Importa lugares desde una lista compartida de Naver Maps',
+  'admin.addons.catalog.airtrail.name': 'AirTrail',
+  'admin.addons.catalog.airtrail.description': 'Sincroniza vuelos desde tu instancia de AirTrail',
+  'admin.addons.catalog.llm_parsing.name': 'Análisis con IA',
+  'admin.addons.catalog.llm_parsing.description': 'Lee reservas que el analizador integrado no entiende, con un modelo de IA que tú elijas',
   'admin.addons.enabled': 'Activo',
   'admin.addons.disabled': 'Desactivado',
   'admin.addons.type.trip': 'Viaje',
@@ -517,6 +544,7 @@ const admin: TranslationStrings = {
   'admin.addons.integrationHint': 'Servicios backend e integraciones de API sin página dedicada',
   'admin.addons.toast.updated': 'Complemento actualizado',
   'admin.addons.toast.error': 'No se pudo actualizar el complemento',
+  'admin.addons.group.count': '{enabled} de {total} activados',
   'admin.addons.noAddons': 'No hay complementos disponibles',
   'admin.weather.title': 'Datos meteorológicos',
   'admin.weather.badge': 'Desde el 24 de marzo de 2026',
@@ -612,7 +640,7 @@ const admin: TranslationStrings = {
   'admin.addons.catalog.packing.name': 'Listas',
   'admin.addons.catalog.packing.description': 'Listas de equipaje y tareas pendientes para tus viajes',
   'admin.addons.catalog.budget.name': 'Costes',
-  'admin.addons.catalog.budget.description': 'Controla los gastos y planifica el presupuesto del viaje',
+  'admin.addons.catalog.budget.description': 'Controla los gastos del viaje y repártelos entre los viajeros',
   'admin.addons.catalog.documents.name': 'Documentos',
   'admin.addons.catalog.documents.description': 'Guarda y gestiona la documentación del viaje',
   'admin.addons.catalog.vacay.name': 'Vacaciones',
@@ -620,7 +648,7 @@ const admin: TranslationStrings = {
   'admin.addons.catalog.atlas.name': 'Atlas',
   'admin.addons.catalog.atlas.description': 'Mapa del mundo con los países visitados y estadísticas de viaje',
   'admin.addons.catalog.collab.name': 'Colaboración',
-  'admin.addons.catalog.collab.description': 'Notas, encuestas y chat en tiempo real para organizar el viaje',
+  'admin.addons.catalog.collab.description': 'Notas, encuestas, chat y sugerencias para planificar en grupo',
   'admin.oidcOnlyMode': 'Desactivar autenticación por contraseña',
   'admin.oidcOnlyModeHint':
     'Si está activado, solo se permite el inicio de sesión con SSO. El inicio de sesión y registro con contraseña se bloquean.',
@@ -673,8 +701,7 @@ const admin: TranslationStrings = {
   'admin.addons.catalog.journey.description':
     'Seguimiento de viajes y diario de viajero con registros de ubicación, fotos e historias diarias',
   'admin.addons.catalog.collections.name': 'Colecciones',
-  'admin.addons.catalog.collections.description':
-    'Biblioteca personal de lugares: guarda lugares de tus viajes en listas con nombre, cópialos a cualquier viaje y compártelos con otros',
+  'admin.addons.catalog.collections.description': 'Reúne lugares de cualquier viaje en listas con nombre y reutilízalos',
   'admin.passkey.title': 'Inicio de sesión con passkey',
   'admin.passkey.cardHint':
     'Permite que los usuarios inicien sesión con passkeys (WebAuthn). Desactivado de forma predeterminada.',
