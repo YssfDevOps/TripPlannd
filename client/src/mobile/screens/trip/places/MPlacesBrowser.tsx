@@ -9,6 +9,7 @@ import { useAddonStore } from '../../../../store/addonStore'
 import { useToast } from '../../../../components/shared/Toast'
 import { collectionsApi } from '../../../../api/collections'
 import PlaceAvatar from '../../../../components/shared/PlaceAvatar'
+import MarkdownText from '../../../../components/shared/MarkdownText'
 import { getCategoryIcon } from '../../../../components/shared/categoryIcons'
 import { resolveTrackColor } from '../../../../components/Map/trackColors'
 import MConfirmSheet from '../../settings/MConfirmSheet'
@@ -326,7 +327,7 @@ export default function MPlacesBrowser({ planner, shell }: MPlacesBrowserProps) 
                 <button type="button" onClick={() => openRow(place)} className="flex min-w-0 flex-1 items-center gap-[11px] text-left">
                   {selectMode && <SquareCheck big checked={selectedIds.has(place.id)} />}
                   <PlaceAvatar place={place} category={cat} size={40} />
-                  <span className="min-w-0 flex-1">
+                  <div className="min-w-0 flex-1">
                     <span className="flex items-center gap-[6px]">
                       {/* Stroke in the track's colour — the mobile map is full-bleed
                           with no sidebar, so this is the only thing tying a line to
@@ -341,9 +342,9 @@ export default function MPlacesBrowser({ planner, shell }: MPlacesBrowserProps) 
                       <span className="truncate text-[0.8125rem] font-semibold text-m-ink">{place.name}</span>
                     </span>
                     {sub && (
-                      <span className="mt-px block truncate font-geist text-[0.65625rem] text-m-muted">{sub}</span>
+                      <MarkdownText clamp className="mt-px font-geist text-[0.65625rem] text-m-muted">{sub}</MarkdownText>
                     )}
-                  </span>
+                  </div>
                 </button>
                 {!selectMode && dayNumber != null && (
                   <span className="flex-none whitespace-nowrap rounded-full border border-[color:var(--m-rowbr)] bg-[color:var(--m-ic)] px-[9px] py-1 font-geist text-[0.59375rem] font-bold uppercase tracking-[.05em] text-m-muted">
